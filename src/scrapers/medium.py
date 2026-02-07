@@ -347,15 +347,7 @@ def extract_metadata(soup, url, logger):
                 metadata["tags"] = tags
         except (json.JSONDecodeError, Exception) as e:
             logger.warning(f"  Failed to extract tags from Apollo state: {str(e)}")
-    
-    # # Fallback: Extract keywords from meta tag (less reliable)
-    # if not tags:
-    #     keywords_meta = soup.find("meta", {"name": "keywords"})
-    #     if keywords_meta:
-    #         keywords = keywords_meta.get("content", "")
-    #         if keywords:
-    #             metadata["keywords"] = keywords
-    
+            
     # Extract image
     image_meta = soup.find("meta", property="og:image")
     if image_meta:
