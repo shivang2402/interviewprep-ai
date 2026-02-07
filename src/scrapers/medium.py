@@ -60,6 +60,7 @@ def setup_logging(log_file):
     console_handler.setLevel(logging.WARNING)
     
     return logging.getLogger(__name__)
+
 # ============================================================================
 # SITEMAP FETCHING FUNCTIONS
 # ============================================================================
@@ -180,60 +181,6 @@ def random_delay(min_seconds, max_seconds):
 # SCRAPING FUNCTIONS
 # ============================================================================
 
-# def fetch_html(url, logger):
-#     """Fetch HTML with detailed error tracking and anti-bot measures."""
-#     try:
-#         # Random delay before request (2-5 seconds)
-#         random_delay(2, 5)
-        
-#         # Get realistic headers
-#         headers = get_headers()
-        
-#         # Make request
-#         r = requests.get(url, headers=headers, timeout=30)
-#         r.raise_for_status()
-        
-#         logger.info(f"Successfully fetched: {url}")
-#         return r.text, None
-    
-#     except requests.exceptions.HTTPError as e:
-#         status_code = e.response.status_code
-        
-#         if status_code == 404:
-#             error_msg = "HTTP_404_NOT_FOUND"
-#         elif status_code == 410:
-#             error_msg = "HTTP_410_GONE (Deleted or account suspended)"
-#         elif status_code == 403:
-#             error_msg = "HTTP_403_FORBIDDEN (Access denied/rate limited)"
-#             logger.warning(f"Bot detection triggered for {url}. Consider increasing delays.")
-#         elif status_code == 429:
-#             error_msg = "HTTP_429_TOO_MANY_REQUESTS (Rate limited)"
-#             logger.warning(f"Rate limited! Sleeping for 30 seconds...")
-#             time.sleep(30)
-#         elif status_code >= 500:
-#             error_msg = f"HTTP_{status_code}_SERVER_ERROR"
-#         else:
-#             error_msg = f"HTTP_{status_code}_ERROR"
-        
-#         logger.warning(f"Fetch failed for {url}: {error_msg}")
-#         return None, error_msg
-    
-#     except requests.exceptions.Timeout:
-#         logger.warning(f"Timeout for {url}")
-#         return None, "TIMEOUT (Request took too long)"
-    
-#     except requests.exceptions.ConnectionError:
-#         logger.warning(f"Connection error for {url}")
-#         return None, "CONNECTION_ERROR (Network issue)"
-    
-#     except requests.exceptions.RequestException as e:
-#         logger.error(f"Request error for {url}: {str(e)}")
-#         return None, f"REQUEST_ERROR: {str(e)}"
-    
-#     except Exception as e:
-#         logger.error(f"Unknown error for {url}: {str(e)}")
-#         return None, f"UNKNOWN_ERROR: {str(e)}"
-
 def fetch_html(url, logger):
     """Fetch HTML using Playwright (real browser) to avoid bot detection."""
     try:
@@ -304,7 +251,7 @@ def fetch_html(url, logger):
             return None, f"PLAYWRIGHT_ERROR: {str(e)}"
 
 def is_paywalled(soup):
-    """Robust paywall detection."""
+    """Robust paywall detection with enhanced Apollo State checking."""
     
     # 1. Check for "meteredContent" class
     if soup.find("article", {"class": re.compile(r".*meteredContent.*", re.I)}):
@@ -324,22 +271,33 @@ def is_paywalled(soup):
         except (json.JSONDecodeError, Exception):
             pass
     
-    # 4. Check Apollo state
+    # 4. Check Apollo state - ENHANCED
     apollo_state = soup.find("script", string=re.compile(r"__APOLLO_STATE__", re.I))
     if apollo_state:
         try:
-            json_str = apollo_state.string.split("= ", 1)[1].strip()
+            json_str = apollo_state.string.split("=", 1)[1].strip()
             if json_str.endswith(";"):
                 json_str = json_str[:-1]
             
             data = json.loads(json_str)
             
+            # Check ALL Post objects, not just first one
             for key, value in data.items():
-                if isinstance(value, dict):
+                if key.startswith("Post:") and isinstance(value, dict):
+                    # Check multiple paywall indicators
                     if value.get("isLocked") == True:
                         return True, "Apollo isLocked"
                     if value.get("isLockedPreviewOnly") == True:
                         return True, "Apollo isLockedPreviewOnly"
+                    if value.get("isMarkedPaywallOnly") == True:
+                        return True, "Apollo isMarkedPaywallOnly"
+                    
+                    # Check content object for locked status
+                    content_key = 'content({"postMeteringOptions":{"referrer":""}})'
+                    content_ref = value.get(content_key) or value.get("content")
+                    if isinstance(content_ref, dict):
+                        if content_ref.get("isLockedPreviewOnly") == True:
+                            return True, "Apollo content isLockedPreviewOnly"
         except (json.JSONDecodeError, Exception):
             pass
     
@@ -347,16 +305,15 @@ def is_paywalled(soup):
     if soup.find(string=re.compile(r"This is a preview", re.I)):
         return True, "Preview text"
     
+    # 6. Check for paywall CTAs
+    if soup.find(string=re.compile(r"Upgrade to continue|Subscribe to read", re.I)):
+        return True, "Paywall CTA"
+    
     return False, None
 
-def extract_metadata(soup, url):
-    """Extract all available metadata from Medium article."""
+def extract_metadata(soup, url, logger):
+    """Extract all available metadata from Medium article including tags from Apollo State."""
     metadata = {}
-    
-    # Extract author
-    author_meta = soup.find("meta", property="author") or soup.find("meta", {"name": "author"})
-    if author_meta:
-        metadata["author"] = author_meta.get("content", "")
     
     # Extract description
     desc_meta = soup.find("meta", property="og:description") or soup.find("meta", {"name": "description"})
@@ -368,10 +325,36 @@ def extract_metadata(soup, url):
     if read_time_meta:
         metadata["reading_time"] = read_time_meta.get("content", "")
     
-    # Extract tags/keywords
-    keywords_meta = soup.find("meta", {"name": "keywords"})
-    if keywords_meta:
-        metadata["keywords"] = keywords_meta.get("content", "")
+    # Extract tags from Apollo State
+    tags = []
+    apollo_script = soup.find("script", string=re.compile(r"__APOLLO_STATE__", re.I))
+    if apollo_script:
+        try:
+            json_str = apollo_script.string.split("=", 1)[1].strip()
+            if json_str.endswith(";"):
+                json_str = json_str[:-1]
+            
+            data = json.loads(json_str)
+            
+            # Find all Tag objects in Apollo state
+            for key, value in data.items():
+                if key.startswith("Tag:") and isinstance(value, dict):
+                    tag_title = value.get("displayTitle") or value.get("id")
+                    if tag_title and tag_title not in tags:
+                        tags.append(tag_title)
+            
+            if tags:
+                metadata["tags"] = tags
+        except (json.JSONDecodeError, Exception) as e:
+            logger.warning(f"  Failed to extract tags from Apollo state: {str(e)}")
+    
+    # # Fallback: Extract keywords from meta tag (less reliable)
+    # if not tags:
+    #     keywords_meta = soup.find("meta", {"name": "keywords"})
+    #     if keywords_meta:
+    #         keywords = keywords_meta.get("content", "")
+    #         if keywords:
+    #             metadata["keywords"] = keywords
     
     # Extract image
     image_meta = soup.find("meta", property="og:image")
@@ -385,83 +368,83 @@ def extract_metadata(soup, url):
     
     return metadata
 
-# # def parse_medium_article(html, url, logger):
-#     """Parse Medium article with new JSON structure."""
-#     try:
-#         soup = BeautifulSoup(html, "html.parser")
+def extract_from_apollo_state(soup, logger):
+    """Extract article content from Medium's Apollo GraphQL state."""
+    try:
+        apollo_script = soup.find("script", string=re.compile(r"__APOLLO_STATE__", re.I))
         
-#         # Check for paywall
-#         is_paywalled_result, paywall_reason = is_paywalled(soup)
-#         if is_paywalled_result:
-#             logger.info(f"Paywalled article skipped: {url} - {paywall_reason}")
-#             return None, f"PAYWALLED ({paywall_reason})"
+        if not apollo_script:
+            return None
         
-#         # Extract title
-#         title_meta = soup.find("meta", property="og:title")
-#         title = title_meta["content"] if title_meta else "Untitled"
+        json_str = apollo_script.string.split("=", 1)[1].strip()
+        if json_str.endswith(";"):
+            json_str = json_str[:-1]
         
-#         # Extract published date
-#         date_meta = soup.find("meta", property="article:published_time")
-#         published_at = date_meta["content"] if date_meta else None
+        data = json.loads(json_str)
         
-#         # Find main article content
-#         article_tag = soup.find("article")
-#         if not article_tag:
-#             article_tag = soup.find("div", {"class": re.compile(r".*postArticle.*", re.I)})
+        # Find all paragraph objects
+        paragraphs = []
+        for key, value in data.items():
+            if key.startswith("Paragraph:") and isinstance(value, dict):
+                text = value.get("text", "")
+                paragraph_type = value.get("type", "P")
+                
+                if text.strip():
+                    # Extract the index from the key for proper ordering
+                    # Key format: "Paragraph:67db0db5c8aa_0"
+                    try:
+                        index = int(key.split("_")[-1])
+                    except (ValueError, IndexError):
+                        index = 0
+                    
+                    paragraphs.append({
+                        "index": index,
+                        "text": text,
+                        "type": paragraph_type
+                    })
         
-#         if not article_tag:
-#             logger.warning(f"No content found for {url}")
-#             return None, "NO_CONTENT"
+        if not paragraphs:
+            return None
         
-#         # Convert to markdown for raw_content
-#         raw_content = md(str(article_tag)).strip()
+        # Sort by index to maintain order
+        paragraphs.sort(key=lambda x: x["index"])
         
-#         # Extract metadata
-#         source_metadata = extract_metadata(soup, url)
-        
-#         # Generate document_id
-#         document_id = generate_document_id(url)
-        
-#         # Generate content_hash
-#         content_hash = generate_content_hash(title, raw_content)
-        
-#         # Get current timestamp
-#         scraped_at = datetime.now(timezone.utc).isoformat()
-        
-#         logger.info(f"Successfully parsed: {title}")
-        
-#         # Return in the new structure
-#         article_data = {
-#             # Identity & Traceability
-#             "document_id": document_id,
-#             "source_platform": "medium",
-#             "source_url": url,
+        # Convert to markdown
+        markdown_content = []
+        for para in paragraphs:
+            text = para["text"]
+            para_type = para["type"]
             
-#             # Core Content
-#             "title": title,
-#             "raw_content": raw_content,
-#             "content_hash": content_hash,
-            
-#             # Temporal Information
-#             "published_at": published_at,
-#             "scraped_at": scraped_at,
-            
-#             # Source-Specific Metadata
-#             "source_metadata": source_metadata
-#         }
+            if para_type == "H2":
+                markdown_content.append(f"## {text}")
+            elif para_type == "H3":
+                markdown_content.append(f"### {text}")
+            elif para_type == "H4":
+                markdown_content.append(f"#### {text}")
+            elif para_type == "PQ":  # Pull quote
+                markdown_content.append(f"> {text}")
+            elif para_type == "PRE":  # Code block
+                markdown_content.append(f"```\n{text}\n```")
+            elif para_type in ["OLI", "ULI"]:  # List items
+                markdown_content.append(f"- {text}")
+            else:  # P, BQ, etc.
+                markdown_content.append(text)
         
-#         return article_data, None
+        content = "\n\n".join(markdown_content)
         
-#     except Exception as e:
-#         logger.error(f"Parse error for {url}: {str(e)}")
-#         return None, f"PARSE_ERROR: {str(e)}"
+        logger.info(f"Extracted {len(paragraphs)} paragraphs from Apollo state")
+        return content
+    
+    except Exception as e:
+        logger.warning(f"Failed to extract from Apollo state: {str(e)}")
+        return None
 
 def parse_medium_article(html, url, logger):
-    """Parse Medium article with new JSON structure."""
+    """Parse Medium article with Apollo State + HTML fallback."""
     try:
         soup = BeautifulSoup(html, "html.parser")
         
-        # Check for paywall
+        # Check for paywall FIRST (improved detection)
         is_paywalled_result, paywall_reason = is_paywalled(soup)
         if is_paywalled_result:
             logger.info(f"Paywalled article skipped: {url} - {paywall_reason}")
@@ -475,90 +458,88 @@ def parse_medium_article(html, url, logger):
         date_meta = soup.find("meta", property="article:published_time")
         published_at = date_meta["content"] if date_meta else None
         
-        # Find main article content - TRY MULTIPLE STRATEGIES
-        article_tag = None
+        # ===== STRATEGY 0: Try Apollo State FIRST =====
+        raw_content = extract_from_apollo_state(soup, logger)
+        extraction_method = "Apollo State"
         
-        # Strategy 1: Standard <article> tag
-        article_tag = soup.find("article")
-        
-        # Strategy 2: postArticle class
-        if not article_tag:
-            article_tag = soup.find("div", {"class": re.compile(r".*postArticle.*", re.I)})
-        
-        # Strategy 3: Main content div
-        if not article_tag:
-            article_tag = soup.find("main") or soup.find("div", {"role": "main"})
-        
-        # Strategy 4: Look for data-testid
-        if not article_tag:
-            article_tag = soup.find("div", {"data-testid": re.compile(r".*content.*|.*article.*", re.I)})
-        
-        # Strategy 5: REMOVED - No body fallback, just fail
-        # If we can't find proper structure, drop the article
-        # if not article_tag:
-            # logger.warning(f"No proper article structure found for {url} - DROPPING")
-            # logger.warning(f"   Title: {title}")
-            # logger.warning(f"   Found {len(soup.find_all('p'))} paragraph tags")
-            # return None, "NO_ARTICLE_STRUCTURE"
-        
-        # Strategy 5: Extract paragraphs directly as last resort
-        if not article_tag:
-            all_paragraphs = soup.find_all("p")
+        if not raw_content or len(raw_content) < 100:
+            # Fall back to HTML parsing
+            logger.info(f"Apollo extraction insufficient, trying HTML strategies")
             
-            # Filter meaningful paragraphs (> 30 chars)
-            meaningful_paragraphs = [p for p in all_paragraphs 
-                                    if len(p.get_text(strip=True)) > 30]
+            article_tag = None
             
-            if len(meaningful_paragraphs) >= 3:
-                # Create container with paragraphs
-                article_tag = soup.new_tag("div")
-                for p in meaningful_paragraphs:
-                    article_tag.append(p)
-                logger.info(f"Using paragraph extraction ({len(meaningful_paragraphs)} paragraphs)")
-            else:
-                # Truly no content
-                logger.warning(f"No meaningful content - DROPPING")
-                return None, "NO_CONTENT"
+            # Strategy 1: Standard <article> tag
+            article_tag = soup.find("article")
+            if article_tag:
+                extraction_method = "Article tag"
+            
+            # Strategy 2: postArticle class
+            if not article_tag:
+                article_tag = soup.find("div", {"class": re.compile(r".*postArticle.*", re.I)})
+                if article_tag:
+                    extraction_method = "postArticle class"
+            
+            # Strategy 3: Main content div
+            if not article_tag:
+                article_tag = soup.find("main") or soup.find("div", {"role": "main"})
+                if article_tag:
+                    extraction_method = "Main tag"
+            
+            # Strategy 4: data-testid
+            if not article_tag:
+                article_tag = soup.find("div", {"data-testid": re.compile(r".*content.*|.*article.*", re.I)})
+                if article_tag:
+                    extraction_method = "data-testid"
+            
+            # Strategy 5: Paragraph extraction (relaxed)
+            if not article_tag:
+                all_paragraphs = soup.find_all("p")
+                meaningful_paragraphs = [p for p in all_paragraphs 
+                                        if len(p.get_text(strip=True)) > 15]
+                
+                if len(meaningful_paragraphs) >= 2:
+                    article_tag = soup.new_tag("div")
+                    for p in meaningful_paragraphs:
+                        article_tag.append(p)
+                    extraction_method = f"Paragraph extraction ({len(meaningful_paragraphs)} paras)"
+                    logger.info(extraction_method)
+                else:
+                    logger.warning(f"No content found - DROPPING")
+                    logger.warning(f"  Title: {title}")
+                    logger.warning(f"  Total <p> tags: {len(all_paragraphs)}")
+                    logger.warning(f"  Meaningful paragraphs: {len(meaningful_paragraphs)}")
+                    return None, "NO_CONTENT"
+            
+            # Convert to markdown
+            raw_content = md(str(article_tag)).strip()
         
-        # Convert to markdown for raw_content
-        raw_content = md(str(article_tag)).strip()
-        
-        # Validate content isn't empty
-        if len(raw_content) < 100:  # Too short to be a real article
-            logger.warning(f"Content too short for {url}: {len(raw_content)} chars - DROPPING")
+        # Validate content length
+        if len(raw_content) < 100:
+            logger.warning(f"Content too short: {len(raw_content)} chars - DROPPING")
+            logger.warning(f"  Title: {title}")
+            logger.warning(f"  Method: {extraction_method}")
             return None, "CONTENT_TOO_SHORT"
         
         # Extract metadata
-        source_metadata = extract_metadata(soup, url)
+        source_metadata = extract_metadata(soup, url, logger)
         
-        # Generate document_id
+        # Generate IDs
         document_id = generate_document_id(url)
-        
-        # Generate content_hash
         content_hash = generate_content_hash(title, raw_content)
-        
-        # Get current timestamp
         scraped_at = datetime.now(timezone.utc).isoformat()
         
-        logger.info(f"✅ Successfully parsed: {title}")
+        logger.info(f"Successfully parsed: {title}")
+        logger.info(f"   Method: {extraction_method}, Length: {len(raw_content)} chars")
         
-        # Return in the new structure
         article_data = {
-            # Identity & Traceability
             "document_id": document_id,
             "source_platform": "medium",
             "source_url": url,
-            
-            # Core Content
             "title": title,
             "raw_content": raw_content,
             "content_hash": content_hash,
-            
-            # Temporal Information
             "published_at": published_at,
             "scraped_at": scraped_at,
-            
-            # Source-Specific Metadata
             "source_metadata": source_metadata
         }
         
@@ -566,8 +547,9 @@ def parse_medium_article(html, url, logger):
         
     except Exception as e:
         logger.error(f"Parse error for {url}: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())  # Full stack trace for debugging
         return None, f"PARSE_ERROR: {str(e)}"
-
 
 # ============================================================================
 # SAVE FUNCTIONS
@@ -691,9 +673,9 @@ def main():
     output_dir.mkdir(exist_ok=True)
     
     logger.info("="*60)
-    logger.info("MEDIUM SCRAPER - PRODUCTION RUN")
+    logger.info("MEDIUM SCRAPER - ENHANCED WITH APOLLO STATE EXTRACTION")
     logger.info("="*60)
-    logger.info("Anti-bot measures enabled: Random delays, realistic headers")
+    logger.info("Features: Apollo State parsing, improved paywall detection, tag extraction")
     
     # Fetch main sitemap
     logger.info("Fetching main sitemap...")
@@ -706,8 +688,8 @@ def main():
     # Filter 2025 sitemaps
     sitemap_urls = filter_2025_sitemaps(xml_content, logger)
     
-    # Test mode: comment out this line for full scraping
-    # sitemap_urls = sitemap_urls[:5]
+    #uncomment this line to test with fewer sitemaps
+    # sitemap_urls = sitemap_urls[:20]
     # logger.info(f"Running in TEST MODE - processing first 20 sitemaps")
     
     # Step 1: Collect all interview URLs
@@ -734,7 +716,7 @@ def main():
     logger.info(f"Total interview URLs collected: {len(all_interview_urls)}")
     
     # Save URLs to file
-    urls_file = output_dir / 'medium_interview_urls.txt'  # Changed this line
+    urls_file = output_dir / 'medium_interview_urls.txt'
     with open(urls_file, 'w') as f:
         for url in all_interview_urls:
             f.write(url + '\n')
@@ -816,19 +798,12 @@ def main():
     logger.info(f"Total Failed:         {sum(stats['errors'].values())}")
     logger.info("")
     
-    # Success rate analysis
-    if stats['errors']['http_403_forbidden'] > stats['total'] * 0.5:
-        logger.warning("High 403 rate detected! Consider:")
-        logger.warning("  1. Increasing delays further (5-15 seconds)")
-        logger.warning("  2. Using Playwright instead of requests")
-        logger.warning("  3. Running in smaller batches")
-    
     logger.info(f"Output file: {output_dir}/articles.json")
     logger.info(f"Log file:    {log_file}")
     logger.info(f"URLs file:   {urls_file}")
     logger.info("="*60)
     
-    # Console summary (minimal)
+
     print("\n" + "="*60)
     print("SCRAPING COMPLETE")
     print("="*60)
@@ -838,7 +813,6 @@ def main():
     
     if stats['errors']['http_403_forbidden'] > 0:
         print(f"\nWARNING: {stats['errors']['http_403_forbidden']} articles blocked (403)")
-        print("Consider running again with longer delays or using Playwright")
     
     print(f"\nOutput: {output_dir}/articles.json")
     print(f"Full details in: {log_file}")
