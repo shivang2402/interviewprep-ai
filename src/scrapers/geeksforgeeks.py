@@ -643,17 +643,16 @@ Usage:
 import requests
 import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
-import json
 import time
-import os
 import re
 import hashlib
 from datetime import datetime, date, timezone
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict
 from typing import Optional, List, Dict
 from pathlib import Path
 
-from src.storage.blob import GCSStorageBackend, StorageBackend
+from src.storage.storage_backend import StorageBackend
+from src.storage.gcs_backend import GCSBackend
 
 # ============== CONFIGURATION ==============
 class ScraperConfig:
@@ -793,13 +792,7 @@ class GFGScraper:
         self.config = config or ScraperConfig()
         self.scrape_type = scrape_type or self.config.SCRAPE_TYPE
         self.batch_id = self.config.get_batch_id(self.scrape_type)
-
-        # Storage backend — defaults to local if not provided
-        if storage is None:
-            default_base = Path(__file__).resolve().parent.parent / "data"
-            self.storage = LocalStorageBackend(base_dir=default_base)
-        else:
-            self.storage = storage
+        self.storage = storage
 
         # Build relative paths for this run
         self.today_raw_prefix = f"{self.config.RAW_PREFIX}/{self.config.get_today_str()}"
@@ -1151,7 +1144,7 @@ if __name__ == "__main__":
     # ── Choose your storage backend ──
 
     # Option 1: GCS (production)
-    storage = GCSStorageBackend(bucket_name="interviewprep-ai-data", credentials_path=rf"C:\Users\heetk\Downloads\interviewprep-ai\connection_string.json")
+    storage = GCSBackend(bucket_name="interviewprep-ai-data", credentials_path=rf"C:\Users\heetk\Downloads\interviewprep-ai\connection_string.json")
 
     # Option 2: Local (development)
     # storage = LocalStorageBackend(base_dir=Path("data"))

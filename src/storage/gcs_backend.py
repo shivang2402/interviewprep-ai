@@ -1,75 +1,25 @@
-"""
-Storage backends for the interview scraper.
-Supports local filesystem and Google Cloud Storage.
-
-Usage:
-    # Local storage (default, for development)
-    storage = LocalStorageBackend(base_dir=Path("data"))
-
-    # GCS storage (for production)
-    storage = GCSStorageBackend(bucket_name="interview-scraper-data")
-
-    # Use in scraper
-    scraper = GFGScraper(scrape_type="bulk", storage=storage)
-    scraper.run()
-"""
-
 import json
-import os
-from abc import ABC, abstractmethod
-from pathlib import Path
 from typing import Optional, List
+from storage_backend import StorageBackend
+from google.cloud import storage as gcs
 
 
-
-# ============== ABSTRACT BACKEND ==============
-class StorageBackend(ABC):
-    """Abstract interface for storing scraper output files."""
-
-    @abstractmethod
-    def write_json(self, path: str, data: dict) -> None:
-        """Write a dict as JSON to the given path (relative to base)."""
-        pass
-
-    @abstractmethod
-    def read_json(self, path: str) -> Optional[dict]:
-        """Read JSON from the given path. Returns None if not found."""
-        pass
-
-    @abstractmethod
-    def file_exists(self, path: str) -> bool:
-        """Check if a file exists at the given path."""
-        pass
-
-    @abstractmethod
-    def list_files(self, prefix: str, suffix: str = "") -> List[str]:
-        """List files under a prefix, optionally filtered by suffix."""
-        pass
-
-
-# ============== GCS BACKEND ==============
-class GCSStorageBackend(StorageBackend):
+class GCSBackend(StorageBackend):
     """
-    Stores files in a Google Cloud Storage bucket.
+    Google Cloud Storage implementation of StorageBackend.
 
-    Setup:
-        1. pip install google-cloud-storage
-        2. Set GOOGLE_APPLICATION_CREDENTIALS env var to your service account key path
-           OR pass credentials_path to this class
+    This backend stores and retrieves files from a single GCS bucket.
+    Object names are treated as relative paths and mirror the logical
+    directory structure used by local storage.
 
-    Bucket structure mirrors the local directory structure:
-        raw/gfg/2025-01-15/google-sde-interview.json
-        manifests/scrape_2025-01-15.json
+    Prerequisites:
+        Application credentials configured via one of:
+            * GOOGLE_APPLICATION_CREDENTIALS environment variable
+            * Explicit service account JSON passed to the constructor
     """
 
     def __init__(self, bucket_name: str, credentials_path: Optional[str] = None):
-        try:
-            from google.cloud import storage as gcs
-        except ImportError:
-            raise ImportError(
-                "google-cloud-storage is required for GCS backend.\n"
-                "Install it with: pip install google-cloud-storage"
-            )
+        """Initialize a Google Cloud Storage client bound to a single bucket."""
 
         # If credentials_path provided, use it; otherwise rely on
         # GOOGLE_APPLICATION_CREDENTIALS env var (set during setup)
