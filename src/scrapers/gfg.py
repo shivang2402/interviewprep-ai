@@ -645,81 +645,57 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 import time
 import re
-import hashlib
-from datetime import datetime, date, timezone
-from dataclasses import dataclass, asdict
+from datetime import date
+from dataclasses import dataclass
 from typing import Optional, List, Dict
-from pathlib import Path
 
 from src.storage.storage_backend import StorageBackend
 from src.storage.gcs_backend import GCSBackend
-
-# ============== CONFIGURATION ==============
-class ScraperConfig:
-    """Configuration for GFG Scraper"""
-
-    SITEMAP_INDEX_URL = "https://www.geeksforgeeks.org/sitemap_index_new.xml"
-    POST_SITEMAP_PREFIX = "https://www.geeksforgeeks.org/post/"
-    INTERVIEW_URL_PATTERN = r"^https://www\.geeksforgeeks\.org/interview-experiences/[^/]*interview[^/]*"
-
-    SCRAPE_TYPE = "bulk"
-    BULK_START_DATE = "2025-01-01"
-    DELAY_SECONDS = 3
-    USER_AGENT = "InterviewPrepBot/1.0 (Academic Project; Non-commercial)"
-
-    # Relative paths within storage (no more absolute Path references)
-    RAW_PREFIX = "raw/gfg"
-    MANIFESTS_PREFIX = "manifests"
-
-    @classmethod
-    def get_today_str(cls) -> str:
-        return date.today().isoformat()
-
-    @classmethod
-    def get_batch_id(cls, scrape_type: str) -> str:
-        suffix = "bulk" if scrape_type == "bulk" else "weekly"
-        return f"{cls.get_today_str()}_{suffix}"
+from src.scrapers.configs.gfg import GFGScraperConfigs
+from src.data_models.scraped_document import ScrapedInterviewDocument
+from src.data_models.scraping_manifest import Manifest
 
 
-# ============== DATA MODELS ==============
-@dataclass
-class InterviewDocument:
-    """Unified document schema for interview experiences"""
 
-    document_id: str
-    source_platform: str
-    source_url: str
-    title: str
-    raw_content: str
-    published_at: Optional[str]
-    scraped_at: str
-    scrape_type: str
-    scrape_batch_id: str
-    source_metadata: Dict
-
-    @property
-    def content_hash(self) -> str:
-        return hashlib.md5(f"{self.title}{self.raw_content}".encode()).hexdigest()
-
-    @staticmethod
-    def now_iso() -> str:
-        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    def to_dict(self) -> Dict:
-        d = asdict(self)
-        d["content_hash"] = self.content_hash
-        return d
-
-    @staticmethod
-    def generate_document_id(url: str) -> str:
-        match = re.search(r"/interview-experiences/([^/]+)/?$", url)
-        if match:
-            slug = match.group(1)
-            slug = re.sub(r"[^a-zA-Z0-9_-]", "_", slug)
-            slug = slug.strip("_").lower()
-            return f"gfg_{slug}"
-        url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
-        return f"gfg_{url_hash}"
+# # ============== DATA MODELS ==============
+# @dataclass
+# class InterviewDocument:
+#     """Unified document schema for interview experiences"""
+#
+#     document_id: str
+#     source_platform: str
+#     source_url: str
+#     title: str
+#     raw_content: str
+#     published_at: Optional[str]
+#     scraped_at: str
+#     scrape_type: str
+#     scrape_batch_id: str
+#     source_metadata: Dict
+#
+#     @property
+#     def content_hash(self) -> str:
+#         return hashlib.md5(f"{self.title}{self.raw_content}".encode()).hexdigest()
+#
+#     @staticmethod
+#     def now_iso() -> str:
+#         return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+#
+#     def to_dict(self) -> Dict:
+#         d = asdict(self)
+#         d["content_hash"] = self.content_hash
+#         return d
+#
+#     @staticmethod
+#     def generate_document_id(url: str) -> str:
+#         match = re.search(r"/interview-experiences/([^/]+)/?$", url)
+#         if match:
+#             slug = match.group(1)
+#             slug = re.sub(r"[^a-zA-Z0-9_-]", "_", slug)
+#             slug = slug.strip("_").lower()
+#             return f"gfg_{slug}"
+#         url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
+#         return f"gfg_{url_hash}"
 
 
 @dataclass
@@ -737,43 +713,43 @@ class SitemapInfo:
             return None
 
 
-@dataclass
-class Manifest:
-    """Scrape manifest — now uses StorageBackend instead of direct file I/O"""
-
-    scrape_date: str
-    scrape_type: str
-    started_at: str
-    completed_at: Optional[str]
-    sources: Dict
-    total_files: int
-    last_sitemap_lastmod: Optional[str] = None
-
-    def to_dict(self) -> Dict:
-        return asdict(self)
-
-    def save(self, storage: StorageBackend, path: str):
-        """Save manifest via storage backend."""
-        storage.write_json(path, self.to_dict())
-
-    @classmethod
-    def load(cls, storage: StorageBackend, path: str) -> Optional["Manifest"]:
-        """Load manifest from storage backend."""
-        data = storage.read_json(path)
-        if data:
-            return cls(**data)
-        return None
-
-    @classmethod
-    def get_latest(cls, storage: StorageBackend, manifests_prefix: str) -> Optional["Manifest"]:
-        """Load the most recent manifest file from storage."""
-        # list_files returns sorted descending, so first match is latest
-        files = storage.list_files(prefix=manifests_prefix, suffix=".json")
-        # Filter to only scrape_ manifests
-        manifest_files = [f for f in files if "scrape_" in f]
-        if manifest_files:
-            return cls.load(storage, manifest_files[0])
-        return None
+# @dataclass
+# class Manifest:
+#     """Scrape manifest — now uses StorageBackend instead of direct file I/O"""
+#
+#     scrape_date: str
+#     scrape_type: str
+#     started_at: str
+#     completed_at: Optional[str]
+#     sources: Dict
+#     total_files: int
+#     last_sitemap_lastmod: Optional[str] = None
+#
+#     def to_dict(self) -> Dict:
+#         return asdict(self)
+#
+#     def save(self, storage: StorageBackend, path: str):
+#         """Save manifest via storage backend."""
+#         storage.write_json(path, self.to_dict())
+#
+#     @classmethod
+#     def load(cls, storage: StorageBackend, path: str) -> Optional["Manifest"]:
+#         """Load manifest from storage backend."""
+#         data = storage.read_json(path)
+#         if data:
+#             return cls(**data)
+#         return None
+#
+#     @classmethod
+#     def get_latest(cls, storage: StorageBackend, manifests_prefix: str) -> Optional["Manifest"]:
+#         """Load the most recent manifest file from storage."""
+#         # list_files returns sorted descending, so first match is latest
+#         files = storage.list_files(prefix=manifests_prefix, suffix=".json")
+#         # Filter to only scrape_ manifests
+#         manifest_files = [f for f in files if "scrape_" in f]
+#         if manifest_files:
+#             return cls.load(storage, manifest_files[0])
+#         return None
 
 
 # ============== GFG SCRAPER CLASS ==============
@@ -786,10 +762,10 @@ class GFGScraper:
     def __init__(
         self,
         scrape_type: str = None,
-        config: ScraperConfig = None,
+        config: GFGScraperConfigs = None,
         storage: StorageBackend = None,
     ):
-        self.config = config or ScraperConfig()
+        self.config = config or GFGScraperConfigs()
         self.scrape_type = scrape_type or self.config.SCRAPE_TYPE
         self.batch_id = self.config.get_batch_id(self.scrape_type)
         self.storage = storage
@@ -978,7 +954,7 @@ class GFGScraper:
         return unique_urls
 
     # ─────────── Article Parsing ───────────
-    def _parse_article(self, url: str, html: str) -> Optional[InterviewDocument]:
+    def _parse_article(self, url: str, html: str) -> Optional[ScrapedInterviewDocument]:
         soup = BeautifulSoup(html, "html.parser")
 
         title_tag = soup.find("h1")
@@ -1030,21 +1006,21 @@ class GFGScraper:
         elif "internship" in tags_lower or "intern" in title_lower:
             exp_type = "internship"
 
-        return InterviewDocument(
-            document_id=InterviewDocument.generate_document_id(url),
+        return ScrapedInterviewDocument(
+            document_id=ScrapedInterviewDocument.generate_document_id("gfg",url),
             source_platform="gfg",
             source_url=url,
             title=title,
             raw_content=raw_content,
             published_at=published_at,
-            scraped_at=InterviewDocument.now_iso(),
+            scraped_at=ScrapedInterviewDocument.now_iso(),
             scrape_type=self.scrape_type,
             scrape_batch_id=self.batch_id,
             source_metadata={"tags": tags, "experience_type": exp_type},
         )
 
     # ─────────── Scraping ───────────
-    def _scrape_articles(self, urls: List[Dict]) -> List[InterviewDocument]:
+    def _scrape_articles(self, urls: List[Dict]) -> List[ScrapedInterviewDocument]:
         print(f"\n[3/3] Scraping {len(urls)} articles...")
         documents = []
 
@@ -1068,41 +1044,41 @@ class GFGScraper:
 
         return documents
 
-    def _save_document(self, doc: InterviewDocument):
+    def _save_document(self, doc: ScrapedInterviewDocument):
         """Save document via storage backend — works for both local and GCS."""
         path = f"{self.today_raw_prefix}/{doc.document_id}.json"
         self.storage.write_json(path, doc.to_dict())
 
-    # ─────────── Manifest ───────────
-    def _create_manifest(self, sitemaps: List[SitemapInfo], started_at: str) -> Manifest:
-        latest_lastmod = None
-        if sitemaps:
-            latest_lastmod = max(
-                (s.lastmod for s in sitemaps if s.lastmod), default=None
-            )
-
-        manifest = Manifest(
-            scrape_date=self.config.get_today_str(),
-            scrape_type=self.scrape_type,
-            started_at=started_at,
-            completed_at=InterviewDocument.now_iso(),
-            sources={
-                "gfg": {
-                    "files_collected": self.stats["files_collected"],
-                    "sitemaps_processed": self.stats["sitemaps_processed"],
-                    "urls_found": self.stats["urls_found"],
-                    "errors": self.stats["errors"],
-                    "error_urls": self.stats["error_urls"][:10],
-                }
-            },
-            total_files=self.stats["files_collected"],
-            last_sitemap_lastmod=latest_lastmod,
-        )
-
-        manifest_path = f"{self.manifests_prefix}/scrape_{self.config.get_today_str()}.json"
-        manifest.save(self.storage, manifest_path)
-        print(f"\nManifest saved to {manifest_path}")
-        return manifest
+    # # ─────────── Manifest ───────────
+    # def _create_manifest(self, sitemaps: List[SitemapInfo], started_at: str) -> Manifest:
+    #     latest_lastmod = None
+    #     if sitemaps:
+    #         latest_lastmod = max(
+    #             (s.lastmod for s in sitemaps if s.lastmod), default=None
+    #         )
+    #
+    #     manifest = Manifest(
+    #         scrape_date=self.config.get_today_str(),
+    #         scrape_type=self.scrape_type,
+    #         started_at=started_at,
+    #         completed_at=ScrapedInterviewDocument.now_iso(),
+    #         sources={
+    #             "gfg": {
+    #                 "files_collected": self.stats["files_collected"],
+    #                 "sitemaps_processed": self.stats["sitemaps_processed"],
+    #                 "urls_found": self.stats["urls_found"],
+    #                 "errors": self.stats["errors"],
+    #                 "error_urls": self.stats["error_urls"][:10],
+    #             }
+    #         },
+    #         total_files=self.stats["files_collected"],
+    #         last_sitemap_lastmod=latest_lastmod,
+    #     )
+    #
+    #     manifest_path = f"{self.manifests_prefix}/scrape_{self.config.get_today_str()}.json"
+    #     manifest.save(self.storage, manifest_path)
+    #     print(f"\nManifest saved to {manifest_path}")
+    #     return manifest
 
     # ─────────── Main Entry Point ───────────
     def run(self):
@@ -1112,7 +1088,7 @@ class GFGScraper:
         print("=" * 60)
         print(f"Batch ID: {self.batch_id}")
 
-        started_at = InterviewDocument.now_iso()
+        started_at = ScrapedInterviewDocument.now_iso()
 
         sitemaps = self._get_sitemaps()
         if not sitemaps:
@@ -1130,7 +1106,7 @@ class GFGScraper:
             return
 
         documents = self._scrape_articles(urls)
-        manifest = self._create_manifest(sitemaps, started_at)
+        # manifest = self._create_manifest(sitemaps, started_at)
 
         print("\n" + "=" * 60)
         print("SCRAPE COMPLETE")
@@ -1141,13 +1117,8 @@ class GFGScraper:
 
 # ============== ENTRY POINT ==============
 if __name__ == "__main__":
-    # ── Choose your storage backend ──
-
-    # Option 1: GCS (production)
+    # GCS (production)
     storage = GCSBackend(bucket_name="interviewprep-ai-data", credentials_path=rf"C:\Users\heetk\Downloads\interviewprep-ai\connection_string.json")
-
-    # Option 2: Local (development)
-    # storage = LocalStorageBackend(base_dir=Path("data"))
 
     scraper = GFGScraper(scrape_type="bulk", storage=storage)
     scraper.run()
