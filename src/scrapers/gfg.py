@@ -222,7 +222,7 @@ class GFGScraper:
             all_urls.extend(interview_urls)
             print(f"        Found {len(interview_urls)} interview URLs (after lastmod filter)")
             self.stats["sitemaps_processed"] += 1
-            break  # Keeping your original break
+            # break  # Testing for single site map
 
         seen = set()
         unique_urls = []
