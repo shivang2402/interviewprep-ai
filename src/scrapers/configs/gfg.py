@@ -13,8 +13,8 @@ class GFGScraperConfigs:
     USER_AGENT = "InterviewPrepBot/1.0 (Academic Project; Non-commercial)"
 
     # Relative paths within storage (no more absolute Path references)
-    RAW_PREFIX = "raw/gfg"
-    MANIFESTS_PREFIX = "manifests"
+    RAW_PREFIX = "raw"
+    # MANIFESTS_PREFIX = "manifests"
 
     @classmethod
     def get_today_str(cls) -> str:
@@ -24,3 +24,15 @@ class GFGScraperConfigs:
     def get_batch_id(cls, scrape_type: str) -> str:
         suffix = "bulk" if scrape_type == "bulk" else "weekly"
         return f"{cls.get_today_str()}_{suffix}"
+
+    @classmethod
+    def get_raw_prefix(cls, scrape_type: str) -> str:
+        """
+        Returns the raw prefix based on scrape type:
+        - bulk: raw/bulk/gfg
+        - incremental: raw/incremental/{date}/gfg
+        """
+        if scrape_type == "bulk":
+            return f"{cls.RAW_PREFIX}/bulk/gfg"
+        else:
+            return f"{cls.RAW_PREFIX}/incremental/{cls.get_today_str()}/gfg"
