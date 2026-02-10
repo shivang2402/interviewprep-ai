@@ -1,6 +1,6 @@
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
-from typing import Dict
+from typing import Dict, Optional
 import hashlib
 import json
 
@@ -19,7 +19,7 @@ class ScrapedInterviewDocument:
     source_url: str
     title: str
     raw_content: str
-    published_at: str
+    published_at: Optional[str]
     scraped_at: str
     scrape_type: str
     scrape_batch_id: str

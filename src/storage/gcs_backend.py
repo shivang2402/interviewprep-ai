@@ -69,12 +69,6 @@ class GCSBackend(StorageBackend):
         blobs = self.client.list_blobs(self.bucket_name, prefix=prefix)
         results = []
         for blob in blobs:
-            if blob.name.endswith(suffix) if suffix else True:
+            if not suffix or blob.name.endswith(suffix):
                 results.append(blob.name)
         return sorted(results, reverse=True)
-
-# if __name__ == "__main__":
-
-#     storage = GCSStorageBackend(bucket_name="interviewprep-ai-data", credentials_path=rf"C:\Users\heetk\Downloads\interviewprep-ai\connection_string.json")
-#     storage.write_json("test/hello.json", {"status": "it works!"})
-#     print(storage.read_json("test/hello.json"))  # {'status': "it works!"}

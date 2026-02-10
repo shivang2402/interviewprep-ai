@@ -1,9 +1,3 @@
-"""
-GFG Interview Experience Scraper (GCS-compatible)
-Supports bulk and incremental scraping with manifest tracking.
-Works with Google Cloud Storage.
-"""
-
 import requests
 import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
@@ -51,6 +45,12 @@ class GFGScraper:
         self.config = config or GFGScraperConfigs()
         self.scrape_type = scrape_type or self.config.SCRAPE_TYPE
         self.batch_id = self.config.get_batch_id(self.scrape_type)
+
+        if storage is None:
+            raise ValueError(
+                "A valid StorageBackend instance must be provided to GFGScraper. "
+                "Got storage=None."
+            )
         self.storage = storage
 
         # Build relative paths for this run
