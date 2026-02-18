@@ -4,8 +4,8 @@ from typing import Dict, List, Optional, Set
 import json
 
 # ── Valid enum values (mirrors DB enums) ──
-VALID_PLATFORMS: Set[str] = {"leetcode", "geeksforgeeks", "medium"}
-VALID_EXPERIENCE: Set[str] = {"intern", "entry", "mid", "senior", "staff", "unknown"}
+VALID_PLATFORMS: Set[str] = {"leetcode", "gfg", "medium"}
+VALID_EXPERIENCE: Set[str] = {"intern", "entry", "mid", "senior", "staff", "leadership","unknown"}
 VALID_OUTCOMES: Set[str] = {"offer", "reject", "pending", "unknown"}
 VALID_DIFFICULTY: Set[str] = {"easy", "medium", "hard", "unknown"}
 VALID_INTERVIEW_TYPES: Set[str] = {
