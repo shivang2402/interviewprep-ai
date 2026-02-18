@@ -8,7 +8,7 @@ class LeetCodeScraperConfigs:
     TARGET_TAGS = ["interview"]
 
     SCRAPE_TYPE = "bulk"
-    BULK_MAX_POSTS = 500
+    BULK_MAX_POSTS = float('inf')
     INCREMENTAL_MAX_POSTS = 100
     PAGE_SIZE = 50
     DELAY_SECONDS = 1.0

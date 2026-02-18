@@ -298,7 +298,14 @@ class GFGScraper:
 
         for i, url_data in enumerate(urls):
             url = url_data["url"]
-            print(f"    [{i+1}/{len(urls)}] {url[:65]}...")
+            print(f"    [{i+1}/{len(urls)}] {url[:65]}...", end="", flush=True)
+
+            # Dedup check — skip if already scraped
+            doc_id = ScrapedInterviewDocument.generate_document_id("gfg", url)
+            existing_path = f"{self.today_raw_prefix}/{doc_id}.json"
+            if self.storage.file_exists(existing_path):
+                print(" (already scraped)")
+                continue
 
             html = self._fetch(url)
             if html is None:
