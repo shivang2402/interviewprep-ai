@@ -121,7 +121,8 @@ class LeetCodeScraper:
             if self.scrape_type == "bulk"
             else self.config.INCREMENTAL_MAX_POSTS
         )
-        print(f"\n[1/2] Fetching post listings (max {max_posts})...")
+        max_label = "unlimited" if max_posts == float('inf') else str(max_posts)
+        print(f"\n[1/2] Fetching post listings (max {max_label})...")
 
         all_posts = []
         skip = 0
@@ -134,7 +135,7 @@ class LeetCodeScraper:
                 "keywords": [""],
                 "tagSlugs": self.config.TARGET_TAGS,
                 "skip": skip,
-                "first": min(self.config.PAGE_SIZE, max_posts - len(all_posts)),
+                "first": self.config.PAGE_SIZE,
             }
 
             data = self._graphql_request("discussPostItems", self.config.LIST_QUERY, variables)
@@ -164,7 +165,8 @@ class LeetCodeScraper:
             if not has_next or len(all_posts) >= max_posts:
                 break
 
-        all_posts = all_posts[:max_posts]
+        if max_posts != float('inf'):
+            all_posts = all_posts[:max_posts]
         self.stats["posts_listed"] = len(all_posts)
         print(f"    Total posts listed: {len(all_posts)}")
         return all_posts

@@ -578,6 +578,15 @@ class MediumScraper:
     def scrape_article(self, url):
         """Scrape a single article."""
 
+        # Dedup check — skip if already scraped
+        doc_id = ScrapedInterviewDocument.generate_document_id("medium", url)
+        existing_path = f"{self.today_raw_prefix}/{doc_id}.json"
+        if self.storage.file_exists(existing_path):
+            return {
+                "url": url,
+                "status": "ALREADY_SCRAPED",
+            }
+
         # Fetch HTML
         html, fetch_error = self.fetch_html(url)
 
@@ -653,6 +662,9 @@ class MediumScraper:
 
     def _update_stats(self, result):
         """Update statistics based on scrape result."""
+        if result.get("status") == "ALREADY_SCRAPED":
+            return  # Skip — not an error, not a new file
+
         if result.get("status") == "SUCCESS":
             self.stats["success"] += 1
 
