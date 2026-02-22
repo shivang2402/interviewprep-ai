@@ -8,3 +8,4 @@ langdetect
 datasketch
 spacy
 psycopg2-binary
+pytest
