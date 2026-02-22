@@ -31,14 +31,15 @@ import json
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
-from dataclasses import dataclass, field, asdict
-from typing import List, Dict, Optional, Any
+from dataclasses import asdict
+from typing import List, Dict, Optional
 
 import yaml
 
 from src.preprocessing.steps.base import PreprocessingStep
 from src.preprocessing.registry import _STEP_REGISTRY
 from src.storage.gcs_backend import GCSBackend
+from src.data_models.preprocessing_report import PreprocessingPipelineReport
 
 
 # ── Resource loading ──
@@ -103,34 +104,6 @@ def _build_steps(
         kwargs = step_kwargs.get(name, {})
         steps.append(_STEP_REGISTRY[name](**kwargs))
     return steps
-
-
-# ─────────────────────────────────────────────────
-# Pipeline Run Report
-# ─────────────────────────────────────────────────
-
-
-@dataclass
-class PipelineReport:
-    """
-    Summary of a full pipeline run.
-
-    Written to GCS alongside processed output for audit trail.
-    """
-
-    batch_id: str
-    started_at: str = ""
-    completed_at: str = ""
-    total_duration_seconds: float = 0.0
-    input_count: int = 0
-    output_count: int = 0
-    step_results: List[Dict[str, Any]] = field(default_factory=list)
-    resumed_from_step: Optional[str] = None
-    quarantined_count: int = 0
-    status: str = "pending"  # pending | completed | failed
-
-    def to_dict(self) -> dict:
-        return asdict(self)
 
 
 # ─────────────────────────────────────────────────
@@ -259,6 +232,7 @@ class PreprocessingPipeline:
         self.processed_prefix = gcs_cfg["processed_prefix"]
         self.checkpoint_prefix = gcs_cfg["checkpoint_prefix"]
         self.quarantine_prefix = gcs_cfg["quarantine_prefix"]
+        self.manifest_prefix = gcs_cfg["manifest_prefix"]
 
         # Build step chain
         self.step_configs = self.config["steps"]
@@ -349,7 +323,7 @@ class PreprocessingPipeline:
 
     # ── Public API ──
 
-    def run(self, batch_id: str, resume: bool = False) -> PipelineReport:
+    def run(self, batch_id: str, resume: bool = False) -> PreprocessingPipelineReport:
         """
         Execute the full pipeline for a scrape batch.
 
@@ -363,7 +337,7 @@ class PreprocessingPipeline:
         Returns:
             PipelineReport with per-step stats and final counts.
         """
-        report = PipelineReport(
+        report = PreprocessingPipelineReport(
             batch_id=batch_id,
             started_at=datetime.now(timezone.utc).isoformat(),
         )
@@ -606,9 +580,9 @@ class PreprocessingPipeline:
 
         logger.info(f"Quarantined {len(docs)} docs for review")
 
-    def _write_report(self, batch_id: str, report: PipelineReport) -> None:
+    def _write_report(self, batch_id: str, report: PreprocessingPipelineReport) -> None:
         """Write the pipeline run report to GCS."""
-        path = f"{self.processed_prefix}/{batch_id}_report.json"
+        path = f"{self.manifest_prefix}/{batch_id}/preprocessing_report.json"
         self.storage.write_json(path, report.to_dict())
 
 

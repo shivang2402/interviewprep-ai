@@ -18,6 +18,7 @@ gcs:
   processed_prefix: "processed"          # Where ProcessedDocuments go
   checkpoint_prefix: "checkpoints/"       # Intermediate state between steps
   quarantine_prefix: "quarantine/"        # Docs that fail validation
+  manifest_prefix : "manifests"
 
 # ── Batch Processing ──
 batch:
