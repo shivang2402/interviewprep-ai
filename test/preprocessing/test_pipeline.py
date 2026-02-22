@@ -16,17 +16,16 @@ All GCS and step interactions are mocked — no real GCS or step logic runs.
 """
 import json
 import pytest
-from dataclasses import asdict
-from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch, call, PropertyMock
+
+from unittest.mock import MagicMock, patch
 
 from src.preprocessing.pipeline import (
-    PipelineReport,
     CheckpointManager,
     PreprocessingPipeline,
     _build_steps,
 )
-from src.preprocessing.steps.base import PreprocessingStep, StepResult
+from src.preprocessing.steps.base import PreprocessingStep
+from src.data_models.preprocessing_report import PreprocessingPipelineReport
 
 
 # ─────────────────────────────────────────────────
@@ -95,6 +94,7 @@ def _make_pipeline(steps=None, config_override=None):
     pipeline.processed_prefix = "processed"
     pipeline.checkpoint_prefix = "checkpoints/"
     pipeline.quarantine_prefix = "quarantine/"
+    pipeline.manifest_prefix = "manifests"
     pipeline.checkpointing_enabled = True
     pipeline.cleanup_checkpoints = True
     pipeline.batch_size = 500
@@ -110,7 +110,7 @@ def _make_pipeline(steps=None, config_override=None):
 
 class TestPipelineReport:
     def test_defaults(self):
-        r = PipelineReport(batch_id="test_batch")
+        r = PreprocessingPipelineReport(batch_id="test_batch")
         assert r.status == "pending"
         assert r.input_count == 0
         assert r.output_count == 0
@@ -119,16 +119,16 @@ class TestPipelineReport:
         assert r.resumed_from_step is None
 
     def test_to_dict_contains_batch_id(self):
-        r = PipelineReport(batch_id="my_batch")
+        r = PreprocessingPipelineReport(batch_id="my_batch")
         d = r.to_dict()
         assert d["batch_id"] == "my_batch"
 
     def test_to_dict_serializable(self):
-        r = PipelineReport(batch_id="b", status="completed", input_count=10, output_count=8)
+        r = PreprocessingPipelineReport(batch_id="b", status="completed", input_count=10, output_count=8)
         json.dumps(r.to_dict())  # Should not raise
 
     def test_to_dict_step_results(self):
-        r = PipelineReport(batch_id="b")
+        r = PreprocessingPipelineReport(batch_id="b")
         r.step_results.append({"step_name": "content_normalizer", "output_count": 5})
         d = r.to_dict()
         assert len(d["step_results"]) == 1
@@ -524,11 +524,11 @@ class TestWriteOutputs:
 
     def test_write_report_writes_to_gcs(self):
         pipeline = _make_pipeline()
-        report = PipelineReport(batch_id="b", status="completed")
+        report = PreprocessingPipelineReport(batch_id="b", status="completed")
         pipeline._write_report("b", report)
         pipeline.storage.write_json.assert_called_once()
         path = pipeline.storage.write_json.call_args[0][0]
-        assert "b_report" in path
+        assert "manifests/b/preprocessing_report.json" in path
 
     def test_write_quarantined_object_with_to_dict(self):
         pipeline = _make_pipeline()
@@ -561,7 +561,7 @@ class TestPipelineRun:
     def test_run_returns_pipeline_report(self):
         pipeline = self._run_setup()
         report = pipeline.run("batch_1")
-        assert isinstance(report, PipelineReport)
+        assert isinstance(report, PreprocessingPipelineReport)
 
     def test_run_status_completed_on_success(self):
         pipeline = self._run_setup()
