@@ -42,7 +42,7 @@ class MediumScraperConfigs:
 
     # Storage paths (relative within storage)
     RAW_PREFIX = "raw"
-    MANIFESTS_PREFIX = "manifests/medium"
+    MANIFESTS_PREFIX = "manifests"
 
     # Test mode
     MAX_SITEMAPS = None  # Set to None to process all

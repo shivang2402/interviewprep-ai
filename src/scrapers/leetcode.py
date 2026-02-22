@@ -424,7 +424,8 @@ class LeetCodeScraper:
             total_files=self.stats["files_collected"],
         )
 
-        manifest_path = f"{self.manifests_prefix}/scrape_{self.config.get_today_str()}.json"
+        batch_id = self.config.get_batch_id(self.scrape_type)
+        manifest_path = f"{self.manifests_prefix}/{batch_id}/leetcode/scrape_{self.config.get_today_str()}.json"
         manifest.save(self.storage, manifest_path)
         print(f"\nManifest saved to {manifest_path}")
         return manifest

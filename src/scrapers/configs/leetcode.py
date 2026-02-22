@@ -21,7 +21,7 @@ class LeetCodeScraperConfigs:
     )
 
     RAW_PREFIX = "raw"
-    MANIFESTS_PREFIX = "manifests/leetcode"
+    MANIFESTS_PREFIX = "manifests"
 
     # ── Tags to skip during company extraction ──
     SKIP_TAGS = frozenset({

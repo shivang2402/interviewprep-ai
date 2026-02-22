@@ -32,12 +32,14 @@ class Manifest:
         return None
 
     @classmethod
-    def get_latest(cls, storage: StorageBackend, manifests_prefix: str) -> Optional["Manifest"]:
+    def get_latest(cls, storage: StorageBackend, manifests_prefix: str, platform_filter: str = None) -> Optional["Manifest"]:
         """Load the most recent manifest file from storage."""
         # list_files returns sorted descending, so first match is latest
         files = storage.list_files(prefix=manifests_prefix, suffix=".json")
         # Filter to only scrape_ manifests
         manifest_files = [f for f in files if "scrape_" in f]
+        if platform_filter:
+            manifest_files = [f for f in manifest_files if f"/{platform_filter}/" in f]
         if manifest_files:
             return cls.load(storage, manifest_files[0])
         return None
