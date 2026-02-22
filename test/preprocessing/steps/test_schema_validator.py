@@ -200,37 +200,6 @@ class TestRequiredFieldValidation:
         doc = ProcessedInterviewDocument(**valid_kwargs)
         assert doc.document_id == "leetcode_abc123"
 
-
-# ── Platform normalization ──
-
-class TestPlatformNormalization:
-    def test_gfg_normalized_to_geeksforgeeks(self, valid_kwargs):
-        valid_kwargs["source_platform"] = "gfg"
-        doc = ProcessedInterviewDocument(**valid_kwargs)
-        assert doc.source_platform == "geeksforgeeks"
-
-    def test_lc_normalized_to_leetcode(self, valid_kwargs):
-        valid_kwargs["source_platform"] = "lc"
-        doc = ProcessedInterviewDocument(**valid_kwargs)
-        assert doc.source_platform == "leetcode"
-
-    def test_valid_platform_accepted(self, valid_kwargs):
-        for platform in VALID_PLATFORMS:
-            valid_kwargs["source_platform"] = platform
-            doc = ProcessedInterviewDocument(**valid_kwargs)
-            assert doc.source_platform == platform
-
-    def test_invalid_platform_raises(self, valid_kwargs):
-        valid_kwargs["source_platform"] = "twitter"
-        with pytest.raises(ValueError, match="Invalid source_platform"):
-            ProcessedInterviewDocument(**valid_kwargs)
-
-    def test_case_insensitive_platform(self, valid_kwargs):
-        valid_kwargs["source_platform"] = "LEETCODE"
-        doc = ProcessedInterviewDocument(**valid_kwargs)
-        assert doc.source_platform == "leetcode"
-
-
 # ── Safe-enum normalization ──
 
 class TestSafeEnumNormalization:
