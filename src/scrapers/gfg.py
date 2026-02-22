@@ -141,7 +141,7 @@ class GFGScraper:
             print(f"    Filtered to {len(filtered)} sitemaps (lastmod >= {cutoff})")
             return filtered
         else:
-            last_manifest = Manifest.get_latest(self.storage, self.manifests_prefix)
+            last_manifest = Manifest.get_latest(self.storage, f"{self.manifests_prefix}/", platform_filter="gfg")
             if last_manifest and last_manifest.last_sitemap_lastmod:
                 cutoff_str = last_manifest.last_sitemap_lastmod
                 filtered = [s for s in sitemaps if s.lastmod and s.lastmod > cutoff_str]
@@ -159,7 +159,7 @@ class GFGScraper:
         if self.scrape_type == "bulk":
             cutoff_date = self.config.BULK_START_DATE
         else:
-            last_manifest = Manifest.get_latest(self.storage, self.manifests_prefix)
+            last_manifest = Manifest.get_latest(self.storage, f"{self.manifests_prefix}/", platform_filter="gfg")
             if last_manifest and last_manifest.last_sitemap_lastmod:
                 cutoff_date = last_manifest.last_sitemap_lastmod.split("T")[0]
             else:
@@ -354,7 +354,8 @@ class GFGScraper:
             last_sitemap_lastmod=latest_lastmod,
         )
 
-        manifest_path = f"{self.manifests_prefix}/scrape_{self.config.get_today_str()}.json"
+        batch_id = self.config.get_batch_id(self.scrape_type)
+        manifest_path = f"{self.manifests_prefix}/{batch_id}/gfg/scrape_{self.config.get_today_str()}.json"
         manifest.save(self.storage, manifest_path)
         print(f"\nManifest saved to {manifest_path}")
         return manifest

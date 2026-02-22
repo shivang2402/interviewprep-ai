@@ -126,6 +126,7 @@ class PipelineReport:
     output_count: int = 0
     step_results: List[Dict[str, Any]] = field(default_factory=list)
     resumed_from_step: Optional[str] = None
+    quarantined_count: int = 0
     status: str = "pending"  # pending | completed | failed
 
     def to_dict(self) -> dict:
@@ -413,16 +414,13 @@ class PreprocessingPipeline:
                     break
 
             # Separate valid docs from quarantined
-            # valid_docs, quarantined_docs = self._separate_quarantined(docs)
-            valid_docs = docs
+            valid_docs, quarantined_docs = self._separate_quarantined(docs)
 
             # Write outputs
             self._write_processed(batch_id, valid_docs)
-            # self._write_quarantined(batch_id, quarantined_docs)
-            self._write_report(batch_id, report)
-
+            self._write_quarantined(batch_id, quarantined_docs)
             report.output_count = len(valid_docs)
-            # report.quarantined_count = len(quarantined_docs)
+            report.quarantined_count = len(quarantined_docs)
 
             # Cleanup checkpoints on success
             if self.cleanup_checkpoints and self.checkpointing_enabled:
@@ -444,6 +442,7 @@ class PreprocessingPipeline:
                 - datetime.fromisoformat(report.started_at)
             ).total_seconds()
             report.total_duration_seconds = elapsed
+            self._write_report(batch_id, report)
 
         logger.info(
             f"Pipeline {report.status}: "
@@ -543,8 +542,7 @@ class PreprocessingPipeline:
         valid = []
         quarantined = []
         for doc in docs:
-            if "_quarantine_reason" in doc.keys():
-            # if doc.get("_quarantine_reason"):
+            if hasattr(doc, "_quarantine_reason") or (isinstance(doc, dict) and "_quarantine_reason" in doc):
                 quarantined.append(doc)
             else:
                 valid.append(doc)
@@ -590,22 +588,27 @@ class PreprocessingPipeline:
         if not docs:
             return
 
-        batch_date = batch_id.replace("scrape_", "")
 
         for doc in docs:
-            doc_id = doc.get("document_id", "unknown")
-            reason = doc.get("_quarantine_reason", "unknown")
+            if isinstance(doc, dict):
+                doc_id = doc.get("document_id", "unknown")
+                reason = doc.get("_quarantine_reason", "unknown")
+                write_data = doc
+            else:
+                doc_id = getattr(doc, "document_id", "unknown")
+                reason = getattr(doc, "_quarantine_reason", "unknown")
+                write_data = doc.to_dict() if hasattr(doc, "to_dict") else str(doc)
             path = (
-                f"{self.quarantine_prefix}{batch_date}/"
+                f"{self.quarantine_prefix}{batch_id}/"
                 f"{reason}/{doc_id}.json"
             )
-            self.storage.write_json(path, doc)
+            self.storage.write_json(path, write_data)
 
         logger.info(f"Quarantined {len(docs)} docs for review")
 
     def _write_report(self, batch_id: str, report: PipelineReport) -> None:
         """Write the pipeline run report to GCS."""
-        path = f"{self.processed_prefix}{batch_id}_report.json"
+        path = f"{self.processed_prefix}/{batch_id}_report.json"
         self.storage.write_json(path, report.to_dict())
 
 
