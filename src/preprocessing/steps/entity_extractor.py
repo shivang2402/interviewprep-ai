@@ -254,21 +254,18 @@ class EntityExtractor(PreprocessingStep):
         # ── Tier 1: Title regex patterns ──
         company = self._extract_company_from_title(title)
         if company:
-            # print("Company extracted from title")
             return self._normalize_company(company)
 
         # ── Tier 2: Alias dictionary scan ──
         for text in [title, content[:500], content]:
             company = self._find_company_in_text(text)
             if company:
-                # print("Company extracted from Alias dictionary scan")
                 return company  # Already normalized by alias lookup
 
         # ── Tier 3: spaCy ORG NER (title + first 500 chars only) ──
         if self._ner_enabled:
             company = self._extract_company_via_ner(title, content[:500])
             if company:
-                # print("Company extracted from spaCy ORG NER")
                 return self._normalize_company(company)
 
         return None
@@ -365,16 +362,119 @@ class EntityExtractor(PreprocessingStep):
         """
         Extract and normalize job role.
 
-        Same priority as company: title → first paragraph → full scan.
-        Also converts roman numerals (SDE II → SDE 2).
+        3-tier approach:
+            Tier 1: Title regex patterns — most reliable
+                    ("SDE-2 Interview at Google", "Software Engineer II")
+            Tier 2: Context phrase patterns in content
+                    ("for the role of SDE", "applied for SDE position")
+            Tier 3: Direct alias dictionary scan
+                    (fallback — plain keyword match)
+
+        Role + level suffix (SDE-2, SDE III, SDE 1) are captured
+        together. Roman numerals are normalized to digits.
         """
+        # ── Tier 1: Title scan (highest signal) ──
+        role = self._find_role_with_level(title)
+        if role:
+            return role
+
+        # ── Tier 2: Context phrases in first 500 chars ──
+        role = self._find_role_in_context(content[:500])
+        if role:
+            return role
+
+        # ── Tier 3: Direct alias scan — title, head, full ──
         for text in [title, content[:500], content]:
-            match = self._find_role_in_text(text)
+            role = self._find_role_in_text(text)
+            if role:
+                return self._normalize_roman_numerals(role)
+
+        return None
+
+    def _find_role_with_level(self, text: str) -> Optional[str]:
+        """
+        Extract role + optional level suffix as a combined match.
+
+        Catches patterns like:
+            SDE-2, SDE 3, SDE-III, SDE II, SWE-1, SWE2
+            Software Engineer II, Software Development Engineer 3
+            Sr. SDE, Senior SDE, Associate SDE, Lead SDE
+
+        Returns normalized role string (e.g., "Software Development Engineer 2").
+        """
+        text_lower = text.lower()
+
+        # Sort aliases longest-first for greedy matching
+        for alias in sorted(ROLE_ALIASES.keys(), key=len, reverse=True):
+            # Build pattern: alias + optional separator + optional level
+            # Matches: "sde", "sde-2", "sde 3", "sde-III", "sdeII", "sde2"
+            pattern = (
+                r"\b"
+                + re.escape(alias)
+                + r"[\s\-]*"
+                + r"(\d{1,2}|I{1,3}|IV|VI{0,3}|IX|X)?"
+                + r"\b"
+            )
+            match = re.search(pattern, text_lower)
             if match:
-                return self._normalize_roman_numerals(match)
+                canonical = ROLE_ALIASES[alias]
+                level_suffix = match.group(1)
+                if level_suffix:
+                    level_suffix = self._roman_to_digit(level_suffix)
+                    return f"{canonical} {level_suffix}"
+                return canonical
+
+        return None
+
+    def _find_role_in_context(self, text: str) -> Optional[str]:
+        """
+        Extract role from contextual phrases commonly used in
+        interview blog posts.
+
+        Patterns:
+            "for the role of [ROLE]"
+            "applied for [ROLE] position"
+            "interview for [ROLE]"
+            "hiring for [ROLE]"
+            "offered [ROLE] role"
+            "position: [ROLE]"
+            "Target Position: [ROLE]"
+            "[ROLE] role at [Company]"
+        """
+        text_lower = text.lower()
+
+        # Context patterns — the role appears after these trigger phrases
+        context_triggers = [
+            r"(?:for\s+the\s+)?role\s+(?:of|:)\s+",
+            r"(?:applied|applying)\s+(?:for|as)\s+(?:the\s+)?(?:role\s+of\s+)?",
+            r"interview(?:ed)?\s+for\s+(?:the\s+)?(?:role\s+of\s+)?(?:a\s+)?",
+            r"(?:hiring|recruited?)\s+for\s+(?:the\s+)?",
+            r"(?:offered|selected\s+for)\s+(?:the\s+)?(?:role\s+of\s+)?",
+            r"(?:position|designation)\s*:\s*",
+            r"target\s+position\s*:\s*",
+        ]
+
+        for trigger in context_triggers:
+            # After the trigger, try to match any known role alias
+            for alias in sorted(ROLE_ALIASES.keys(), key=len, reverse=True):
+                full_pattern = (
+                    trigger
+                    + re.escape(alias)
+                    + r"[\s\-]*(\d{1,2}|I{1,3}|IV|VI{0,3}|IX|X)?"
+                )
+                match = re.search(full_pattern, text_lower)
+                if match:
+                    canonical = ROLE_ALIASES[alias]
+                    level_suffix = match.group(1) if match.lastindex else None
+                    if level_suffix:
+                        level_suffix = self._roman_to_digit(level_suffix)
+                        return f"{canonical} {level_suffix}"
+                    return canonical
+
         return None
 
     def _find_role_in_text(self, text: str) -> Optional[str]:
+        """Tier 3: Simple alias dictionary scan (fallback)."""
         text_lower = text.lower()
         for alias in sorted(ROLE_ALIASES.keys(), key=len, reverse=True):
             pattern = r"\b" + re.escape(alias) + r"\b"
@@ -385,15 +485,19 @@ class EntityExtractor(PreprocessingStep):
     def _normalize_roman_numerals(self, role: str) -> str:
         """Convert roman numerals in role to digits: SDE II → SDE 2."""
         def replace_roman(match):
-            roman = match.group(0).lower()
-            return ROMAN_MAP.get(roman, match.group(0))
+            return self._roman_to_digit(match.group(0))
 
-        # Match standalone roman numerals (I, II, III, IV, V, etc.)
         return re.sub(
             r"\b(I{1,3}|IV|VI{0,3}|IX|X)\b",
             replace_roman,
             role,
         )
+
+    @staticmethod
+    def _roman_to_digit(value: str) -> str:
+        """Convert a roman numeral or digit string to digit string."""
+        lower = value.lower().strip()
+        return ROMAN_MAP.get(lower, value)
 
     # ── 3. Job Level ──
 
@@ -518,6 +622,7 @@ class EntityExtractor(PreprocessingStep):
                 if re.search(r"\b" + re.escape(kw) + r"\b", text):
                     return level
         return "unknown"
+
 
 # if __name__ == "__main__":
 #     from preprocessing.steps.content_normalizer import ContentNormalizer
