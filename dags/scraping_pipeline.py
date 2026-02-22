@@ -1,6 +1,7 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
+from airflow.operators.email import EmailOperator
 from airflow.exceptions import AirflowFailException
 from datetime import datetime, timedelta
 import logging
@@ -18,6 +19,16 @@ logger = logging.getLogger("interviewprep.dag")
 
 GCS_BUCKET_NAME = 'interviewprep-ai-data'
 GCP_PROJECT_ID = 'professorbot-dovbsg'
+
+# ── Email config ──────────────────────────────────────────────
+NOTIFY_EMAILS = [
+    'kansara.dh@northeastern.edu',
+    'lnu.prat@northeastern.edu',
+    'patel.shivangm@northeastern.edu',
+    'kanani.h@northeastern.edu',
+    'shah.shreyc@northeastern.edu',
+    'parikh.malh@northeastern.edu',
+]
 
 
 def _get_batch_id(**kwargs) -> str:
@@ -85,13 +96,13 @@ def print_summary(**kwargs):
     gfg_stats = ti.xcom_pull(task_ids='scrape_gfg') or {}
     leetcode_stats = ti.xcom_pull(task_ids='scrape_leetcode') or {}
     medium_stats = ti.xcom_pull(task_ids='scrape_medium') or {}
-    
+
     total = (
         gfg_stats.get('files_collected', 0) +
         leetcode_stats.get('files_collected', 0) +
         medium_stats.get('success', 0)
     )
-    
+
     print("\n" + "=" * 60)
     print("BULK SCRAPING PIPELINE SUMMARY")
     print("=" * 60)
@@ -100,7 +111,7 @@ def print_summary(**kwargs):
     print(f"Medium:        {medium_stats.get('success', 0)} files")
     print(f"TOTAL:         {total} files")
     print("=" * 60)
-    
+
     return {
         'total_files': total,
         'gfg': gfg_stats,
@@ -109,10 +120,8 @@ def print_summary(**kwargs):
     }
 
 
-
 def run_preprocessing(**kwargs):
     """Run preprocessing pipeline on raw scraped data. Uses resume on retry."""
-    # Lazy import to avoid loading NLP models at DAG parse time
     import src.preprocessing.steps  # noqa: F401
     from src.preprocessing.pipeline import PreprocessingPipeline
 
@@ -151,6 +160,7 @@ def run_preprocessing(**kwargs):
     print("=" * 60)
 
     return report.to_dict()
+
 
 def validate_processed_data(**kwargs):
     """Verify processed data exists in GCS and counts match."""
@@ -199,7 +209,6 @@ def validate_processed_data(**kwargs):
     print("\nProcessed data validated successfully.")
 
 
-
 def load_to_database(**kwargs):
     """Load processed documents from GCS into PostgreSQL."""
     import os
@@ -246,6 +255,89 @@ def load_to_database(**kwargs):
     return result
 
 
+def build_email_body(**kwargs):
+    """Build email body with pipeline results for both success and failure."""
+    ti = kwargs['ti']
+    dag_run = kwargs['dag_run']
+
+    gfg_stats = ti.xcom_pull(task_ids='scrape_gfg') or {}
+    leetcode_stats = ti.xcom_pull(task_ids='scrape_leetcode') or {}
+    medium_stats = ti.xcom_pull(task_ids='scrape_medium') or {}
+
+    total = (
+        gfg_stats.get('files_collected', 0) +
+        leetcode_stats.get('files_collected', 0) +
+        medium_stats.get('success', 0)
+    )
+
+    preprocess_status = ti.xcom_pull(
+        task_ids='run_preprocessing', key='preprocess_status'
+    ) or 'N/A'
+    preprocess_input = ti.xcom_pull(
+        task_ids='run_preprocessing', key='preprocess_input_count'
+    ) or 0
+    preprocess_output = ti.xcom_pull(
+        task_ids='run_preprocessing', key='preprocess_output_count'
+    ) or 0
+    preprocess_duration = ti.xcom_pull(
+        task_ids='run_preprocessing', key='preprocess_duration_seconds'
+    ) or 0
+
+    db_inserted = ti.xcom_pull(
+        task_ids='load_to_database', key='db_inserted'
+    ) or 0
+    db_skipped = ti.xcom_pull(
+        task_ids='load_to_database', key='db_skipped'
+    ) or 0
+
+    failed_tasks = [
+        t.task_id for t in dag_run.get_task_instances()
+        if t.state == 'failed'
+    ]
+
+    status = "FAILED" if failed_tasks else "SUCCESS"
+
+    body = f"""
+    <h2>InterviewPrep Pipeline Report — {status}</h2>
+    <p><b>Run Date:</b> {kwargs.get('logical_date', 'N/A')}</p>
+
+    <h3>Scraping Results</h3>
+    <table border="1" cellpadding="5" cellspacing="0">
+        <tr><th>Source</th><th>Files</th></tr>
+        <tr><td>GeeksforGeeks</td><td>{gfg_stats.get('files_collected', 0)}</td></tr>
+        <tr><td>LeetCode</td><td>{leetcode_stats.get('files_collected', 0)}</td></tr>
+        <tr><td>Medium</td><td>{medium_stats.get('success', 0)}</td></tr>
+        <tr><td><b>Total</b></td><td><b>{total}</b></td></tr>
+    </table>
+
+    <h3>Preprocessing</h3>
+    <table border="1" cellpadding="5" cellspacing="0">
+        <tr><td>Status</td><td>{preprocess_status}</td></tr>
+        <tr><td>Input Docs</td><td>{preprocess_input}</td></tr>
+        <tr><td>Output Docs</td><td>{preprocess_output}</td></tr>
+        <tr><td>Duration</td><td>{preprocess_duration:.1f}s</td></tr>
+    </table>
+
+    <h3>Database Load</h3>
+    <table border="1" cellpadding="5" cellspacing="0">
+        <tr><td>Inserted</td><td>{db_inserted}</td></tr>
+        <tr><td>Skipped</td><td>{db_skipped}</td></tr>
+    </table>
+    """
+
+    if failed_tasks:
+        body += f"""
+    <h3 style="color:red;">Failed Tasks</h3>
+    <ul>{''.join(f'<li>{t}</li>' for t in failed_tasks)}</ul>
+    """
+
+    body += "<p>— InterviewPrep Airflow Pipeline</p>"
+
+    ti.xcom_push(key="email_subject", value=f"[InterviewPrep] Pipeline {status} — {kwargs.get('logical_date', '')}")
+    ti.xcom_push(key="email_body", value=body)
+
+    return body
+
 
 default_args = {
     'owner': 'admin',
@@ -258,10 +350,10 @@ default_args = {
 dag = DAG(
     'interview_scraping_pipeline',
     default_args=default_args,
-    description='Scrape interview experiences, preprocess, and validate',
+    description='Scrape interview experiences, preprocess, validate, load, and notify',
     schedule=None,
     catchup=False,
-    tags=['scraping', 'preprocessing', 'bulk', 'production'],
+    tags=['scraping', 'preprocessing', 'database', 'bulk', 'production'],
 )
 
 start = BashOperator(
@@ -329,4 +421,21 @@ complete = BashOperator(
     dag=dag,
 )
 
-start >> [scrape_gfg, scrape_leetcode, scrape_medium] >> summary >> preprocess >> validate >> db_load >> complete
+build_email = PythonOperator(
+    task_id='build_email',
+    python_callable=build_email_body,
+    execution_timeout=timedelta(minutes=5),
+    trigger_rule='all_done',
+    dag=dag,
+)
+
+send_email = EmailOperator(
+    task_id='send_notification_email',
+    to=NOTIFY_EMAILS,
+    subject="{{ ti.xcom_pull(task_ids='build_email', key='email_subject') }}",
+    html_content="{{ ti.xcom_pull(task_ids='build_email', key='email_body') }}",
+    trigger_rule='all_done',
+    dag=dag,
+)
+
+start >> [scrape_gfg, scrape_leetcode, scrape_medium] >> summary >> preprocess >> validate >> db_load >> complete >> build_email >> send_email
