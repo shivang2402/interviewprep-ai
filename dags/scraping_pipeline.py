@@ -199,6 +199,54 @@ def validate_processed_data(**kwargs):
     print("\nProcessed data validated successfully.")
 
 
+
+def load_to_database(**kwargs):
+    """Load processed documents from GCS into PostgreSQL."""
+    import os
+    import json
+    import psycopg2
+    from src.database.loader import BatchDBLoader
+
+    batch_id = _get_batch_id(**kwargs)
+    storage = GCSBackend(bucket_name=GCS_BUCKET_NAME, project_id=GCP_PROJECT_ID)
+
+    conn = psycopg2.connect(
+        host=os.environ.get("DB_HOST", "34.148.0.165"),
+        dbname=os.environ.get("DB_NAME", "interviewprep-ai-database"),
+        user=os.environ.get("DB_USER", "postgres"),
+        password=os.environ.get("DB_PASSWORD", "admin"),
+        port=int(os.environ.get("DB_PORT", "5432")),
+        sslmode="require",
+    )
+
+    loader = BatchDBLoader(gcs_backend=storage, db_conn=conn, batch_size=50)
+    prefix = f"processed/{batch_id}/"
+    result = loader.load_batch(prefix)
+
+    ti = kwargs["ti"]
+    ti.xcom_push(key="db_inserted", value=result["inserted"])
+    ti.xcom_push(key="db_skipped", value=result["skipped"])
+
+    print("\n" + "=" * 60)
+    print("DATABASE LOAD SUMMARY")
+    print("=" * 60)
+    print(f"  Batch:     {batch_id}")
+    print(f"  Inserted:  {result['inserted']}")
+    print(f"  Skipped:   {result['skipped']}")
+    print(f"  Errors:    {len(result['errors'])}")
+    print("=" * 60)
+
+    conn.close()
+
+    if result["inserted"] == 0 and result["total"] > 0:
+        raise AirflowFailException(
+            f"DB load failed: 0 inserted out of {result['total']} files"
+        )
+
+    return result
+
+
+
 default_args = {
     'owner': 'admin',
     'depends_on_past': False,
@@ -266,10 +314,19 @@ validate = PythonOperator(
     dag=dag,
 )
 
+db_load = PythonOperator(
+    task_id='load_to_database',
+    python_callable=load_to_database,
+    execution_timeout=timedelta(hours=2),
+    retries=2,
+    retry_delay=timedelta(minutes=2),
+    dag=dag,
+)
+
 complete = BashOperator(
     task_id='complete',
     bash_command='echo " Pipeline completed at $(date)"',
     dag=dag,
 )
 
-start >> [scrape_gfg, scrape_leetcode, scrape_medium] >> summary >> preprocess >> validate >> complete
+start >> [scrape_gfg, scrape_leetcode, scrape_medium] >> summary >> preprocess >> validate >> db_load >> complete
