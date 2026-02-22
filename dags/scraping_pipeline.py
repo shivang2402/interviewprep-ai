@@ -96,13 +96,13 @@ def print_summary(**kwargs):
     gfg_stats = ti.xcom_pull(task_ids='scrape_gfg') or {}
     leetcode_stats = ti.xcom_pull(task_ids='scrape_leetcode') or {}
     medium_stats = ti.xcom_pull(task_ids='scrape_medium') or {}
-    
+
     total = (
         gfg_stats.get('files_collected', 0) +
         leetcode_stats.get('files_collected', 0) +
         medium_stats.get('success', 0)
     )
-    
+
     print("\n" + "=" * 60)
     print("BULK SCRAPING PIPELINE SUMMARY")
     print("=" * 60)
@@ -111,7 +111,7 @@ def print_summary(**kwargs):
     print(f"Medium:        {medium_stats.get('success', 0)} files")
     print(f"TOTAL:         {total} files")
     print("=" * 60)
-    
+
     return {
         'total_files': total,
         'gfg': gfg_stats,
@@ -209,6 +209,52 @@ def validate_processed_data(**kwargs):
     print("\nProcessed data validated successfully.")
 
 
+def load_to_database(**kwargs):
+    """Load processed documents from GCS into PostgreSQL."""
+    import os
+    import json
+    import psycopg2
+    from src.database.loader import BatchDBLoader
+
+    batch_id = _get_batch_id(**kwargs)
+    storage = GCSBackend(bucket_name=GCS_BUCKET_NAME, project_id=GCP_PROJECT_ID)
+
+    conn = psycopg2.connect(
+        host=os.environ.get("DB_HOST", "34.148.0.165"),
+        dbname=os.environ.get("DB_NAME", "interviewprep-ai-database"),
+        user=os.environ.get("DB_USER", "postgres"),
+        password=os.environ.get("DB_PASSWORD", "admin"),
+        port=int(os.environ.get("DB_PORT", "5432")),
+        sslmode="require",
+    )
+
+    loader = BatchDBLoader(gcs_backend=storage, db_conn=conn, batch_size=50)
+    prefix = f"processed/{batch_id}/"
+    result = loader.load_batch(prefix)
+
+    ti = kwargs["ti"]
+    ti.xcom_push(key="db_inserted", value=result["inserted"])
+    ti.xcom_push(key="db_skipped", value=result["skipped"])
+
+    print("\n" + "=" * 60)
+    print("DATABASE LOAD SUMMARY")
+    print("=" * 60)
+    print(f"  Batch:     {batch_id}")
+    print(f"  Inserted:  {result['inserted']}")
+    print(f"  Skipped:   {result['skipped']}")
+    print(f"  Errors:    {len(result['errors'])}")
+    print("=" * 60)
+
+    conn.close()
+
+    if result["inserted"] == 0 and result["total"] > 0:
+        raise AirflowFailException(
+            f"DB load failed: 0 inserted out of {result['total']} files"
+        )
+
+    return result
+
+
 def build_email_body(**kwargs):
     """Build email body with pipeline results for both success and failure."""
     ti = kwargs['ti']
@@ -235,6 +281,13 @@ def build_email_body(**kwargs):
     ) or 0
     preprocess_duration = ti.xcom_pull(
         task_ids='run_preprocessing', key='preprocess_duration_seconds'
+    ) or 0
+
+    db_inserted = ti.xcom_pull(
+        task_ids='load_to_database', key='db_inserted'
+    ) or 0
+    db_skipped = ti.xcom_pull(
+        task_ids='load_to_database', key='db_skipped'
     ) or 0
 
     failed_tasks = [
@@ -264,6 +317,12 @@ def build_email_body(**kwargs):
         <tr><td>Output Docs</td><td>{preprocess_output}</td></tr>
         <tr><td>Duration</td><td>{preprocess_duration:.1f}s</td></tr>
     </table>
+
+    <h3>Database Load</h3>
+    <table border="1" cellpadding="5" cellspacing="0">
+        <tr><td>Inserted</td><td>{db_inserted}</td></tr>
+        <tr><td>Skipped</td><td>{db_skipped}</td></tr>
+    </table>
     """
 
     if failed_tasks:
@@ -291,10 +350,10 @@ default_args = {
 dag = DAG(
     'interview_scraping_pipeline',
     default_args=default_args,
-    description='Scrape interview experiences, preprocess, validate, and notify',
+    description='Scrape interview experiences, preprocess, validate, load, and notify',
     schedule=None,
     catchup=False,
-    tags=['scraping', 'preprocessing', 'bulk', 'production'],
+    tags=['scraping', 'preprocessing', 'database', 'bulk', 'production'],
 )
 
 start = BashOperator(
@@ -347,6 +406,15 @@ validate = PythonOperator(
     dag=dag,
 )
 
+db_load = PythonOperator(
+    task_id='load_to_database',
+    python_callable=load_to_database,
+    execution_timeout=timedelta(hours=2),
+    retries=2,
+    retry_delay=timedelta(minutes=2),
+    dag=dag,
+)
+
 complete = BashOperator(
     task_id='complete',
     bash_command='echo " Pipeline completed at $(date)"',
@@ -370,4 +438,4 @@ send_email = EmailOperator(
     dag=dag,
 )
 
-start >> [scrape_gfg, scrape_leetcode, scrape_medium] >> summary >> preprocess >> validate >> complete >> build_email >> send_email
+start >> [scrape_gfg, scrape_leetcode, scrape_medium] >> summary >> preprocess >> validate >> db_load >> complete >> build_email >> send_email
