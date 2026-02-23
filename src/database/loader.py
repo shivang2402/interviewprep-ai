@@ -84,7 +84,7 @@ class BatchDBLoader:
 
     def load_batch(self, gcs_prefix: str, suffix: str = ".json") -> dict:
         files = self.gcs.list_files(prefix=gcs_prefix, suffix=suffix)
-        files = files[:2]
+        # files = files[:2]
         logger.info(f"[BatchDBLoader] Found {len(files)} files under '{gcs_prefix}'")
         summary = {
             "total": len(files),
