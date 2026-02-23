@@ -33,6 +33,7 @@ jobs:
           pip install "apache-airflow==2.10.4" \
             --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.10.4/constraints-3.10.txt"
           pip install -r requirements.txt
+          pip install google-cloud-secret-manager
           pip install pytest pytest-cov pytest-html coverage
           pip install "typing_extensions>=4.12" --upgrade --force-reinstall
 
