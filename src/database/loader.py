@@ -84,29 +84,55 @@ class BatchDBLoader:
 
     def load_batch(self, gcs_prefix: str, suffix: str = ".json") -> dict:
         files = self.gcs.list_files(prefix=gcs_prefix, suffix=suffix)
-
         files = files[:2]
         logger.info(f"[BatchDBLoader] Found {len(files)} files under '{gcs_prefix}'")
-        summary = {"total": len(files), "inserted": 0, "skipped": 0, "errors": []}
+        summary = {
+            "total": len(files),
+            "inserted": 0,
+            "skipped": 0,
+            "errors": [],
+            "success": [],       # list of {path, document_id, title}
+            "failed_reads": [],  # list of {path, message}
+            "failed_inserts": [],  # list of {document_id, path, title, message}
+        }
 
         for chunk_start in range(0, len(files), self.batch_size):
             chunk = files[chunk_start : chunk_start + self.batch_size]
-            docs = []
+            parsed: list[tuple[str, ProcessedInterviewDocument]] = []
             for path in chunk:
                 try:
                     raw = self.gcs.read_json(path)
                     if raw is None:
                         raise FileNotFoundError(f"Empty / missing blob: {path}")
                     doc = ProcessedInterviewDocument.from_dict(raw)
-                    docs.append(doc)
+                    parsed.append((path, doc))
                 except Exception as e:
                     logger.warning(f"[BatchDBLoader] Skipping {path}: {e}")
                     summary["skipped"] += 1
                     summary["errors"].append((path, str(e)))
+                    summary["failed_reads"].append({"path": path, "message": str(e)})
 
-            if not docs:
+            if not parsed:
                 continue
+            docs = [doc for _, doc in parsed]
             inserted, errs = self._upsert_batch(docs)
+            failed_ids = {e[0] for e in errs}
+            path_by_id = {doc.document_id: (path, doc.title) for path, doc in parsed}
+            for path, doc in parsed:
+                if doc.document_id not in failed_ids:
+                    summary["success"].append({
+                        "path": path,
+                        "document_id": doc.document_id,
+                        "title": doc.title or "",
+                    })
+            for doc_id, msg in errs:
+                path, title = path_by_id.get(doc_id, ("", ""))
+                summary["failed_inserts"].append({
+                    "document_id": doc_id,
+                    "path": path,
+                    "title": title or "",
+                    "message": msg,
+                })
             summary["inserted"] += inserted
             summary["skipped"] += len(errs)
             summary["errors"].extend(errs)
