@@ -16,7 +16,7 @@ on:
         - labeled
 
 env:
-  PYTHONPATH: ./src
+  PYTHONPATH: .
 
 jobs:
   testing:
