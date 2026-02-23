@@ -54,7 +54,7 @@ graph LR
 
 ### Key Design Decisions
 
-- **Parallel scraping** — The three scraper tasks fan out from `start` and run in parallel, then converge at `print_summary`. This keeps the total scraping time close to the slowest scraper rather than the sum of all three.
+- **Parallel scraping** — The three scraper tasks fan out from `start` and run sequentially, then converge at `print_summary`.
 - **Resume on retry** — `run_preprocessing` checks `try_number > 1` and passes `resume=True` to the pipeline, so it picks up from the last checkpoint instead of re-running everything from scratch.
 - **Email on all outcomes** — `build_email` and `send_notification_email` use `trigger_rule='all_done'`, which means the team gets notified whether the pipeline succeeded or failed.
 - **XCom metrics passing** — Scraper stats, preprocessing counts, and DB load results are all pushed/pulled via XCom to build a comprehensive summary email at the end.
