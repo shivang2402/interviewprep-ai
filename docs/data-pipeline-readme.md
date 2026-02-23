@@ -29,7 +29,7 @@ graph LR
     complete --> build_email
     build_email --> send_notification_email
 ```
-![Pipeline DAG](dag.png)
+![Pipeline DAG](dag.jpeg)
 
 ### Task Details
 
