@@ -247,6 +247,14 @@ def load_to_database(**kwargs):
 
     conn.close()
 
+    # Generate and save DB load report to GCS
+    from src.data_models.db_load_report import DBLoadReport
+    report_storage = GCSBackend(bucket_name=GCS_BUCKET_NAME, project_id=GCP_PROJECT_ID)
+    db_report = DBLoadReport.from_load_summary(result, source_prefix=prefix)
+    report_path = f"db-report/{db_report.report_filename()}"
+    report_storage.write_json(report_path, db_report.to_dict())
+    print(f"Report saved to gs://{GCS_BUCKET_NAME}/{report_path}")
+
     if result["inserted"] == 0 and result["total"] > 0:
         raise AirflowFailException(
             f"DB load failed: 0 inserted out of {result['total']} files"
