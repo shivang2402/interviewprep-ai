@@ -4,16 +4,11 @@ on:
   push:
     branches:
       - main
+      - dev
   pull_request:
     branches:
       - main
-  label:
-    types:
-      - created
-    issues:
-      types:
-        - opened
-        - labeled
+      - dev
 
 env:
   PYTHONPATH: .
@@ -39,7 +34,7 @@ jobs:
             --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.10.4/constraints-3.10.txt"
           pip install -r requirements.txt
           pip install pytest pytest-cov pytest-html coverage
-          pip install "typing_extensions>=4.12"
+          pip install "typing_extensions>=4.12" --upgrade --force-reinstall
 
       - name: Run tests with coverage
         run: |
