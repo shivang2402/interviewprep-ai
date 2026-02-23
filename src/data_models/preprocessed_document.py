@@ -16,9 +16,8 @@ VALID_INTERVIEW_TYPES: Set[str] = {
 # ── Platform alias mapping ──
 PLATFORM_NORMALIZE: Dict[str, str] = {
     "leetcode": "leetcode",
-    "lc": "leetcode",
-    "geeksforgeeks": "geeksforgeeks",
-    "gfg": "geeksforgeeks",
+    "geeksforgeeks": "gfg",
+    "gfg": "gfg",
     "medium": "medium",
 }
 
