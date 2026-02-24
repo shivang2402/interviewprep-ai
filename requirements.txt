@@ -1,0 +1,11 @@
+requests
+beautifulsoup4
+google-cloud-storage
+playwright
+markdownify
+pyyaml
+langdetect
+datasketch
+spacy
+psycopg2-binary
+pytest
