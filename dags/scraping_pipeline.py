@@ -2,6 +2,7 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 from airflow.operators.email import EmailOperator
+from airflow.models import Variable
 from airflow.exceptions import AirflowFailException
 from datetime import datetime, timedelta
 import logging
@@ -12,6 +13,9 @@ sys.path.insert(0, '/home/dhruvkansara/airflow/dags')
 from src.scrapers.gfg import GFGScraper
 from src.scrapers.leetcode import LeetCodeScraper
 from src.scrapers.medium import MediumScraper
+from src.scrapers.configs.gfg import GFGScraperConfigs
+from src.scrapers.configs.leetcode import LeetCodeScraperConfigs
+from src.scrapers.configs.medium import MediumScraperConfigs
 from src.storage.gcs_backend import GCSBackend
 from google.cloud import storage as gcs
 
@@ -47,15 +51,77 @@ def _count_blobs(prefix: str, suffix: str = ".json") -> int:
     return len(blobs)
 
 
+def _as_bool(value) -> bool:
+    """Convert common string/int truthy values to bool."""
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _demo_settings(**kwargs) -> dict:
+    """
+    Resolve demo-limit controls from dag_run.conf first, then Airflow Variables.
+
+    Supported keys:
+      - demo_mode (bool)
+      - demo_limit_leetcode (int)
+      - demo_limit_gfg (int)
+      - demo_limit_medium (int)
+      - demo_medium_max_sitemaps (int)
+    """
+    run_conf = (kwargs.get("dag_run").conf if kwargs.get("dag_run") else {}) or {}
+
+    demo_mode_raw = run_conf.get(
+        "demo_mode",
+        Variable.get("demo_mode", default_var="false"),
+    )
+
+    return {
+        "enabled": _as_bool(demo_mode_raw),
+        "leetcode_limit": int(
+            run_conf.get(
+                "demo_limit_leetcode",
+                Variable.get("demo_limit_leetcode", default_var="10"),
+            )
+        ),
+        "gfg_limit": int(
+            run_conf.get(
+                "demo_limit_gfg",
+                Variable.get("demo_limit_gfg", default_var="10"),
+            )
+        ),
+        "medium_limit": int(
+            run_conf.get(
+                "demo_limit_medium",
+                Variable.get("demo_limit_medium", default_var="10"),
+            )
+        ),
+        "medium_max_sitemaps": int(
+            run_conf.get(
+                "demo_medium_max_sitemaps",
+                Variable.get("demo_medium_max_sitemaps", default_var="1"),
+            )
+        ),
+    }
+
+
 def scrape_geeksforgeeks(**kwargs):
     print("=" * 60)
     print("Starting GFG scraper - BULK MODE")
     print("=" * 60)
+    demo = _demo_settings(**kwargs)
     storage = GCSBackend(bucket_name=GCS_BUCKET_NAME, project_id=GCP_PROJECT_ID)
+    config = GFGScraperConfigs()
     scraper = GFGScraper(
         scrape_type='bulk',
+        config=config,
         storage=storage
     )
+
+    if demo["enabled"]:
+        limit = max(0, demo["gfg_limit"])
+        orig_scrape_articles = scraper._scrape_articles
+        scraper._scrape_articles = lambda urls, _orig=orig_scrape_articles: _orig(urls[:limit])
+        print(f"Demo mode ON — limiting GFG scrape to {limit} articles")
+
     scraper.run()
     print(f"GFG Complete: {scraper.stats['files_collected']} files")
     return scraper.stats
@@ -65,9 +131,17 @@ def scrape_leetcode(**kwargs):
     print("=" * 60)
     print("Starting LeetCode scraper - BULK MODE")
     print("=" * 60)
+    demo = _demo_settings(**kwargs)
     storage = GCSBackend(bucket_name=GCS_BUCKET_NAME, project_id=GCP_PROJECT_ID)
+    config = LeetCodeScraperConfigs()
+
+    if demo["enabled"]:
+        config.BULK_MAX_POSTS = max(0, demo["leetcode_limit"])
+        print(f"Demo mode ON — limiting LeetCode BULK_MAX_POSTS to {config.BULK_MAX_POSTS}")
+
     scraper = LeetCodeScraper(
         scrape_type='bulk',
+        config=config,
         storage=storage,
         fetch_comments=False
     )
@@ -80,12 +154,29 @@ def scrape_medium(**kwargs):
     print("=" * 60)
     print("Starting Medium scraper - BULK MODE")
     print("=" * 60)
+    demo = _demo_settings(**kwargs)
     storage = GCSBackend(bucket_name=GCS_BUCKET_NAME, project_id=GCP_PROJECT_ID)
+    config = MediumScraperConfigs()
+
+    if demo["enabled"]:
+        config.MAX_SITEMAPS = max(0, demo["medium_max_sitemaps"])
+        print(
+            f"Demo mode ON — limiting Medium MAX_SITEMAPS to {config.MAX_SITEMAPS} "
+            f"and articles to {max(0, demo['medium_limit'])}"
+        )
+
     scraper = MediumScraper(
         scrape_type='bulk',
+        config=config,
         storage=storage,
         log_dir='/tmp/medium_logs'
     )
+
+    if demo["enabled"]:
+        limit = max(0, demo["medium_limit"])
+        orig_scrape_all_articles = scraper.scrape_all_articles
+        scraper.scrape_all_articles = lambda urls, _orig=orig_scrape_all_articles: _orig(urls[:limit])
+
     scraper.run()
     print(f"Medium Complete: {scraper.stats['success']} files")
     return scraper.stats
