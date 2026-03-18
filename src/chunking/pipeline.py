@@ -21,7 +21,8 @@ import psycopg2
 import psycopg2.extras
 from psycopg2.extras import execute_values
 
-from src.chunking.chunk import chunk_document, DocumentChunk
+from src.chunking.chunker import chunk_document
+from src.data_models.document_chunk import DocumentChunk
 from src.storage.gcs_backend import GCSBackend
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -93,9 +94,7 @@ INSERT INTO public.document_chunks (
     chunk_id, document_id, chunk_index, total_chunks,
     chunk_text, raw_text, word_count,
     char_start_offset, char_end_offset,
-    round_label, strategy, source_platform,
-    company, role, experience_level,
-    interview_outcome, difficulty, interview_type, topics
+    strategy, round_label
 ) VALUES %s
 ON CONFLICT (chunk_id) DO NOTHING
 """
@@ -113,16 +112,8 @@ def insert_chunks(conn, chunks: list[DocumentChunk]):
             c.word_count,
             c.char_start_offset,
             c.char_end_offset,
-            c.round_label,
             c.strategy,
-            c.source_platform,
-            c.company,
-            c.role,
-            c.experience_level,
-            c.interview_outcome,
-            c.difficulty,
-            c.interview_type,
-            c.topics or [],
+            c.round_label
         )
         for c in chunks
     ]
@@ -153,6 +144,7 @@ def write_manifest(gcs_backend: GCSBackend, stats: dict):
 # ---------------------------------------------------------------------------
 
 def run():
+    log.info("Starting chunking pipeline")
     conn = psycopg2.connect(**DB_CONFIG)
     log.info("Connected to Cloud SQL")
 
@@ -163,6 +155,7 @@ def run():
     )
 
     docs = fetch_docs(conn)
+    log.info(f"Fetched {len(docs):,} un-chunked documents")
     if not docs:
         log.info("No new documents to chunk. Exiting.")
         conn.close()
@@ -181,6 +174,7 @@ def run():
 
     for doc in docs:
         try:
+            log.info(f"Chunking {doc['document_id']}...")
             chunks = chunk_document(
                 document_id       = doc["document_id"],
                 cleaned_content   = doc["cleaned_content"],
@@ -216,7 +210,7 @@ def run():
                 "document_id": doc["document_id"],
                 "error":       str(e),
             })
-
+    log.info("Finished chunking")
     # Flush remaining batch
     if batch:
         insert_chunks(conn, batch)

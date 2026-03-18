@@ -1,71 +1,35 @@
 import re
 import uuid
+from pathlib import Path
 from typing import Optional
-from pydantic import BaseModel
+
+import yaml
+
+from src.data_models.document_chunk import DocumentChunk
 
 # ---------------------------------------------------------------------------
-# Config
+# Load config
 # ---------------------------------------------------------------------------
 
-CHUNK_SIZE_WORDS = 500
-OVERLAP_WORDS    = 50
-MIN_DOC_WORDS    = 150
+def _load_config() -> dict:
+    path = Path(__file__).parent / "chunking_config.yaml"
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
 
 
-# ---------------------------------------------------------------------------
-# Pydantic schema
-# ---------------------------------------------------------------------------
-
-class DocumentChunk(BaseModel):
-    chunk_id:          str
-    document_id:       str
-    chunk_index:       int
-    total_chunks:      int
-    chunk_text:        str       # header + raw_text → sent to embedder
-    raw_text:          str       # content only      → shown to user
-    word_count:        int
-    char_start_offset: int
-    char_end_offset:   int
-    round_label:       Optional[str] = None
-    strategy:          str
-    source_platform:   str
-    company:           Optional[str] = None
-    role:              Optional[str] = None
-    experience_level:  Optional[str] = None
-    interview_outcome: Optional[str] = None
-    difficulty:        Optional[str] = None
-    interview_type:    Optional[str] = None
-    topics:            list[str] = []
+def _compile_round_regex(patterns: list[str]) -> re.Pattern:
+    inner = "|".join(patterns)
+    return re.compile(
+        rf"(?:^|\n)\s*(?:{inner})", re.IGNORECASE | re.MULTILINE
+    )
 
 
-# ---------------------------------------------------------------------------
-# Round boundary regex
-# ---------------------------------------------------------------------------
+_cfg = _load_config()
 
-ROUND_RE = re.compile(
-    r"(?:^|\n)\s*"
-    r"(?:"
-    r"(?:round|interview\s*round)[\s\-]*(?:\d+(?:\s*(?:&|and)\s*\d+)?|[IVXL]+)\s*(?:[:\-\(]|\([^)]*\)\s*:)?"
-    r"|(?:zero|first|second|third|fourth|fifth|sixth|seventh)\s*round\s*[:\-\(]?"
-    r"|(?:hr|human\s*resource)\s*(?:round|interview)\s*[:\-\(]?"
-    r"|phone\s*(?:screen|interview)\s*[:\-\(]?"
-    r"|online\s*(?:assessment|test)\s*[:\-\(]?"
-    r"|(?:oa|written\s*test|aptitude\s*test)\s*[:\-\(]"
-    r"|technical\s*(?:round|interview)\s*\d*\s*[:\-\(]?"
-    r"|coding\s*(?:round|interview)\s*\d*\s*[:\-\(]?"
-    r"|system\s*design\s*(?:round|interview)?\s*[:\-\(]?"
-    r"|machine\s*coding\s*(?:round)?\s*[:\-\(]?"
-    r"|behavioral\s*(?:round|interview)\s*[:\-\(]?"
-    r"|managerial\s*(?:round|interview)\s*[:\-\(]?"
-    r"|final\s*(?:round|interview)\s*[:\-\(]?"
-    r"|onsite\s*(?:round|interview)?\s*[:\-\(]?"
-    r"|group\s*discussion\s*[:\-\(]?"
-    r"|superday\s*(?:round|rounds)?\s*[:\-\(]?"
-    r"|f2f\s*\d+\s*[:\-]?"
-    r"|f\s*2\s*f\s*\d+\s*[:\-]?"
-    r")",
-    re.IGNORECASE | re.MULTILINE,
-)
+CHUNK_SIZE_WORDS = _cfg["chunking"]["chunk_size_words"]
+OVERLAP_WORDS    = _cfg["chunking"]["overlap_words"]
+MIN_DOC_WORDS    = _cfg["chunking"]["min_doc_words"]
+ROUND_RE         = _compile_round_regex(_cfg["round_boundary_patterns"])
 
 
 # ---------------------------------------------------------------------------
@@ -256,16 +220,8 @@ def chunk_document(
             word_count        = wc(raw),
             char_start_offset = cs,
             char_end_offset   = ce,
-            round_label       = round_label,
             strategy          = strategy,
-            source_platform   = source_platform,
-            company           = company,
-            role              = role,
-            experience_level  = experience_level,
-            interview_outcome = interview_outcome,
-            difficulty        = difficulty,
-            interview_type    = interview_type,
-            topics            = topics,
+            round_label=round_label
         ))
 
     return chunks
