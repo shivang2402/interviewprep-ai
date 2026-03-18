@@ -24,13 +24,9 @@ from datetime import datetime, timezone
 
 import psycopg2
 import psycopg2.extras
-import time
-print("1--"+ time.asctime())
 from sentence_transformers import SentenceTransformer
-print("2--"+ time.asctime())
 
 from src.storage.gcs_backend import GCSBackend
-print("3"+ time.asctime())
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -67,7 +63,7 @@ DB_BATCH     = 500   # rows per UPDATE round-trip
 # ---------------------------------------------------------------------------
 
 def embedding_column_name(model: str) -> str:
-    return f"embedding_{model.replace('-', '_')}".lower()
+    return f"embeddings_{model.replace('-', '_')}".lower()
 
 
 # ---------------------------------------------------------------------------
@@ -244,5 +240,4 @@ def run(models: list[str] = MODELS):
 
 
 if __name__ == "__main__":
-    log.info("Hi There!")
     run()
