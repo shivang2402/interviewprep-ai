@@ -1,35 +1,21 @@
 """
 Embedding Pipeline
 -------------------
-1. Read chunks from document_chunks (where embedding not yet generated)
-2. Generate embeddings using all-MiniLM-L6-v2 (384-dim)
-3. Store embeddings in chunk_embeddings table
+1. For each model, find chunks missing that model's embedding column
+2. Generate embeddings for all models in one pass per chunk batch
+3. UPDATE the embedding columns in document_chunks
 4. Write manifest to GCS
 
-Note: chunk_embeddings table must already exist in Cloud SQL.
-      See schema below.
-
-SQL to run in Cloud SQL console before this:
+Prerequisites:
     CREATE EXTENSION IF NOT EXISTS vector;
 
-    CREATE TABLE IF NOT EXISTS public.chunk_embeddings (
-        chunk_id        text    NOT NULL REFERENCES public.document_chunks(chunk_id) ON DELETE CASCADE,
-        embedding_model text    NOT NULL,
-        embedding       vector(384) NOT NULL,
-        embedded_at     timestamptz NOT NULL DEFAULT now(),
-        PRIMARY KEY (chunk_id, embedding_model)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_model
-        ON public.chunk_embeddings (embedding_model);
-
-    CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_vector
-        ON public.chunk_embeddings
-        USING ivfflat (embedding vector_cosine_ops)
-        WITH (lists = 100);
+    -- Add embedding columns (run once per model):
+    ALTER TABLE public.document_chunks
+        ADD COLUMN IF NOT EXISTS embedding_all_minilm_l6_v2 vector(384);
+    ALTER TABLE public.document_chunks
+        ADD COLUMN IF NOT EXISTS embedding_all_mpnet_base_v2 vector(768);
 
 Run:
-    pip install sentence-transformers psycopg2-binary
     python -m src.embeddings.pipeline
 """
 
@@ -38,10 +24,13 @@ from datetime import datetime, timezone
 
 import psycopg2
 import psycopg2.extras
-from psycopg2.extras import execute_values
+import time
+print("1--"+ time.asctime())
 from sentence_transformers import SentenceTransformer
+print("2--"+ time.asctime())
 
 from src.storage.gcs_backend import GCSBackend
+print("3"+ time.asctime())
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -64,63 +53,100 @@ GCS_BUCKET  = "interviewprep-ai-data"
 GCS_PROJECT = "professorbot-dovbsg"
 GCS_SECRET  = "gcs-service-account-key"
 
-MODEL_NAME  = "all-MiniLM-L6-v2"          # Model 1 — done
-# MODEL_NAME  = "multi-qa-MiniLM-L6-cos-v1" # Model 2 — QA-specific, 384-dim
-# MODEL_NAME  = "all-mpnet-base-v2"          # Model 3 — best general, 768-dim
-BATCH_SIZE  = 256
-DB_BATCH    = 500
+MODELS = [
+    "all-MiniLM-L6-v2",       # 384-dim
+    "all-mpnet-base-v2",       # 768-dim
+]
+
+ENCODE_BATCH = 256   # sentences per model.encode() call
+DB_BATCH     = 500   # rows per UPDATE round-trip
 
 
 # ---------------------------------------------------------------------------
-# Fetch un-embedded chunks
+# Helpers
 # ---------------------------------------------------------------------------
 
-FETCH_SQL = """
-SELECT
-    dc.chunk_id,
-    dc.chunk_text
-FROM public.document_chunks dc
-WHERE NOT EXISTS (
-    SELECT 1 FROM public.chunk_embeddings ce
-    WHERE ce.chunk_id = dc.chunk_id
-      AND ce.embedding_model = %(model)s
-)
-ORDER BY dc.chunk_id
-"""
+def embedding_column_name(model: str) -> str:
+    return f"embedding_{model.replace('-', '_')}".lower()
 
 
-def fetch_chunks(conn, model: str) -> list[dict]:
+# ---------------------------------------------------------------------------
+# Fetch chunks that are missing ANY model's embedding
+# ---------------------------------------------------------------------------
+
+def fetch_chunks_missing_embeddings(conn, models: list[str]) -> list[dict]:
+    """
+    Return chunks where at least one embedding column is NULL.
+    """
+    columns = [embedding_column_name(m) for m in models]
+    where_clauses = " OR ".join(f"{col} IS NULL" for col in columns)
+
+    sql = f"""
+        SELECT chunk_id, chunk_text
+        FROM public.document_chunks
+        WHERE {where_clauses}
+        ORDER BY chunk_id
+    """
+
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute(FETCH_SQL, {"model": model})
+        cur.execute(sql)
         rows = cur.fetchall()
-    log.info(f"Fetched {len(rows):,} un-embedded chunks for model={model}")
+
+    log.info(f"Fetched {len(rows):,} chunks missing embeddings")
     return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
-# Insert embeddings
+# Update embeddings in document_chunks
 # ---------------------------------------------------------------------------
 
-INSERT_SQL = """
-INSERT INTO public.chunk_embeddings (chunk_id, embedding_model, embedding)
-VALUES %s
-ON CONFLICT (chunk_id, embedding_model) DO NOTHING
-"""
+def update_embeddings(conn, columns: list[str], rows: list[tuple]):
+    """
+    rows: list of (embedding_col1_vec, embedding_col2_vec, ..., chunk_id)
+    """
+    set_clause = ", ".join(f"{col} = data.{col}" for col in columns)
+    col_defs   = ", ".join(f"{col} vector" for col in columns)
+    placeholders = ", ".join(["%s"] * (len(columns) + 1))  # +1 for chunk_id
 
+    sql = f"""
+        UPDATE public.document_chunks AS dc
+        SET {set_clause}
+        FROM (VALUES ({placeholders}))
+            AS data(chunk_id, {", ".join(columns)})
+        WHERE dc.chunk_id = data.chunk_id
+    """
 
-def insert_embeddings(conn, rows: list[tuple]):
+    # Reorder rows: (chunk_id, emb1, emb2, ...) for the VALUES clause
     with conn.cursor() as cur:
-        execute_values(cur, INSERT_SQL, rows)
+        for row in rows:
+            cur.execute(sql, row)
+    conn.commit()
+
+
+def update_embeddings_batch(conn, columns: list[str], rows: list[tuple]):
+    """
+    Batch update using executemany.
+    Each row: (emb_col1_vec, emb_col2_vec, ..., chunk_id)
+    """
+    set_clause = ", ".join(f"{col} = %s" for col in columns)
+    sql = f"""
+        UPDATE public.document_chunks
+        SET {set_clause}
+        WHERE chunk_id = %s
+    """
+
+    with conn.cursor() as cur:
+        cur.executemany(sql, rows)
     conn.commit()
 
 
 # ---------------------------------------------------------------------------
-# Write manifest
+# Write manifest to GCS
 # ---------------------------------------------------------------------------
 
 def write_manifest(gcs_backend: GCSBackend, stats: dict):
     ts   = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
-    path = f"embedding_manifests/manifest_{stats['model']}_{ts}.json"
+    path = f"embedding_manifests/manifest_{ts}.json"
     gcs_backend.write_json(path, stats)
     log.info(f"Manifest written to GCS: {path}")
 
@@ -129,7 +155,9 @@ def write_manifest(gcs_backend: GCSBackend, stats: dict):
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def run(model_name: str = MODEL_NAME):
+def run(models: list[str] = MODELS):
+    log.info(f"Starting embedding pipeline for models: {models}")
+
     conn = psycopg2.connect(**DB_CONFIG)
     log.info("Connected to Cloud SQL")
 
@@ -139,19 +167,25 @@ def run(model_name: str = MODEL_NAME):
         secret_name = GCS_SECRET,
     )
 
-    # Load model
-    log.info(f"Loading model: {model_name}")
-    model = SentenceTransformer(model_name)
-    log.info(f"Model loaded — embedding dim: {model.get_sentence_embedding_dimension()}")
+    # Load all models upfront
+    loaded_models = {}
+    for model_name in models:
+        log.info(f"Loading model: {model_name}")
+        loaded_models[model_name] = SentenceTransformer(model_name)
+        dim = loaded_models[model_name].get_sentence_embedding_dimension()
+        log.info(f"  {model_name} loaded — dim={dim}")
 
-    chunks = fetch_chunks(conn, model_name)
+    # Fetch chunks missing any embedding
+    chunks = fetch_chunks_missing_embeddings(conn, models)
     if not chunks:
-        log.info("No chunks to embed. Exiting.")
+        log.info("All chunks already embedded. Exiting.")
         conn.close()
         return
 
+    columns = [embedding_column_name(m) for m in models]
+
     stats = {
-        "model":            model_name,
+        "models":           models,
         "run_at":           datetime.now(timezone.utc).isoformat(),
         "chunks_embedded":  0,
         "errors":           [],
@@ -159,41 +193,50 @@ def run(model_name: str = MODEL_NAME):
 
     db_batch = []
 
-    for i in range(0, len(chunks), BATCH_SIZE):
-        batch   = chunks[i: i + BATCH_SIZE]
-        texts   = [c["chunk_text"] for c in batch]
-        ids     = [c["chunk_id"]   for c in batch]
+    for i in range(0, len(chunks), ENCODE_BATCH):
+        batch = chunks[i : i + ENCODE_BATCH]
+        texts = [c["chunk_text"] for c in batch]
+        ids   = [c["chunk_id"]   for c in batch]
 
         try:
-            vectors = model.encode(
-                texts,
-                batch_size      = BATCH_SIZE,
-                show_progress_bar = False,
-                normalize_embeddings = True,   # cosine similarity → dot product
-            )
+            # Generate embeddings for all models on this batch
+            all_vectors = {}
+            for model_name in models:
+                vectors = loaded_models[model_name].encode(
+                    texts,
+                    batch_size           = ENCODE_BATCH,
+                    show_progress_bar    = False,
+                    normalize_embeddings = True,
+                )
+                all_vectors[model_name] = vectors
 
-            for chunk_id, vector in zip(ids, vectors):
-                db_batch.append((chunk_id, model_name, vector.tolist()))
+            # Build rows: (emb1, emb2, ..., chunk_id)
+            for j, chunk_id in enumerate(ids):
+                row = tuple(
+                    all_vectors[m][j].tolist() for m in models
+                ) + (chunk_id,)
+                db_batch.append(row)
 
             stats["chunks_embedded"] += len(batch)
 
+            # Flush to DB when batch is large enough
             if len(db_batch) >= DB_BATCH:
-                insert_embeddings(conn, db_batch)
-                log.info(f"  Embedded {stats['chunks_embedded']:,} / {len(chunks):,}")
+                update_embeddings_batch(conn, columns, db_batch)
+                log.info(f"  Updated {stats['chunks_embedded']:,} / {len(chunks):,}")
                 db_batch = []
 
         except Exception as e:
-            log.error(f"Batch {i} failed: {e}")
+            log.error(f"Batch starting at {i} failed: {e}")
             stats["errors"].append({"batch_start": i, "error": str(e)})
 
     # Flush remaining
     if db_batch:
-        insert_embeddings(conn, db_batch)
+        update_embeddings_batch(conn, columns, db_batch)
 
     conn.close()
 
     log.info("=" * 50)
-    log.info(f"Model          : {model_name}")
+    log.info(f"Models         : {models}")
     log.info(f"Chunks embedded: {stats['chunks_embedded']:,}")
     log.info(f"Errors         : {len(stats['errors'])}")
 
@@ -201,10 +244,5 @@ def run(model_name: str = MODEL_NAME):
 
 
 if __name__ == "__main__":
+    log.info("Hi There!")
     run()
-
-
-
-
-
-## PENDING ivfflat task !!!!!!!
