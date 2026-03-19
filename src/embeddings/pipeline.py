@@ -20,7 +20,9 @@ Run:
 """
 
 import logging
+import yaml
 from datetime import datetime, timezone
+from pathlib import Path
 
 import psycopg2
 import psycopg2.extras
@@ -30,6 +32,22 @@ from src.storage.gcs_backend import GCSBackend
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Load config
+# ---------------------------------------------------------------------------
+
+def _load_config() -> dict:
+    path = Path(__file__).parent / "embeddings_configs.yaml"
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+_cfg = _load_config()
+
+MODELS       = _cfg["generator"]["biencoder_models"]
+ENCODE_BATCH = _cfg["generator"]["encode_batch"]
+DB_BATCH     = _cfg["generator"]["db_batch"]
 
 
 # ---------------------------------------------------------------------------
@@ -48,14 +66,6 @@ DB_CONFIG = {
 GCS_BUCKET  = "interviewprep-ai-data"
 GCS_PROJECT = "professorbot-dovbsg"
 GCS_SECRET  = "gcs-service-account-key"
-
-MODELS = [
-    "all-MiniLM-L6-v2",       # 384-dim
-    "all-mpnet-base-v2",       # 768-dim
-]
-
-ENCODE_BATCH = 256   # sentences per model.encode() call
-DB_BATCH     = 500   # rows per UPDATE round-trip
 
 
 # ---------------------------------------------------------------------------
@@ -95,29 +105,6 @@ def fetch_chunks_missing_embeddings(conn, models: list[str]) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Update embeddings in document_chunks
 # ---------------------------------------------------------------------------
-
-def update_embeddings(conn, columns: list[str], rows: list[tuple]):
-    """
-    rows: list of (embedding_col1_vec, embedding_col2_vec, ..., chunk_id)
-    """
-    set_clause = ", ".join(f"{col} = data.{col}" for col in columns)
-    col_defs   = ", ".join(f"{col} vector" for col in columns)
-    placeholders = ", ".join(["%s"] * (len(columns) + 1))  # +1 for chunk_id
-
-    sql = f"""
-        UPDATE public.document_chunks AS dc
-        SET {set_clause}
-        FROM (VALUES ({placeholders}))
-            AS data(chunk_id, {", ".join(columns)})
-        WHERE dc.chunk_id = data.chunk_id
-    """
-
-    # Reorder rows: (chunk_id, emb1, emb2, ...) for the VALUES clause
-    with conn.cursor() as cur:
-        for row in rows:
-            cur.execute(sql, row)
-    conn.commit()
-
 
 def update_embeddings_batch(conn, columns: list[str], rows: list[tuple]):
     """
