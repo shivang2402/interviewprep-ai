@@ -2,6 +2,7 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 from airflow.operators.email import EmailOperator
+from airflow.models import Variable
 from airflow.exceptions import AirflowFailException
 from datetime import datetime, timedelta
 import logging
@@ -12,6 +13,9 @@ sys.path.insert(0, '/home/dhruvkansara/airflow/dags')
 from src.scrapers.gfg import GFGScraper
 from src.scrapers.leetcode import LeetCodeScraper
 from src.scrapers.medium import MediumScraper
+from src.scrapers.configs.gfg import GFGScraperConfigs
+from src.scrapers.configs.leetcode import LeetCodeScraperConfigs
+from src.scrapers.configs.medium import MediumScraperConfigs
 from src.storage.gcs_backend import GCSBackend
 from google.cloud import storage as gcs
 
@@ -47,15 +51,131 @@ def _count_blobs(prefix: str, suffix: str = ".json") -> int:
     return len(blobs)
 
 
+def _as_bool(value) -> bool:
+    """Convert common string/int truthy values to bool."""
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _as_int(value, default: int) -> int:
+    """Best-effort int parser with fallback."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_variable_get(key: str, default: str) -> str:
+    """Read Airflow Variable safely and log fallback reasons."""
+    try:
+        return Variable.get(key, default_var=default)
+    except Exception as e:
+        print(f"[demo_settings] Variable.get('{key}') failed: {e}. Using default='{default}'")
+        return default
+
+
+def _demo_settings(**kwargs) -> dict:
+    """
+    Resolve demo-limit controls from dag_run.conf first, then Airflow Variables.
+
+    Supported keys:
+      - demo_mode (bool)
+      - demo_limit_leetcode (int)
+      - demo_limit_gfg (int)
+      - demo_limit_medium (int)
+      - demo_medium_max_sitemaps (int)
+    """
+    # Airflow 2.x normally injects context into PythonOperator callables with **kwargs,
+    # but we still fallback to get_current_context() for robustness.
+    dag_run = kwargs.get("dag_run")
+    if dag_run is None:
+        try:
+            from airflow.operators.python import get_current_context
+            ctx = get_current_context() or {}
+            dag_run = ctx.get("dag_run")
+            if ctx:
+                kwargs = {**ctx, **kwargs}
+        except Exception:
+            dag_run = None
+
+    raw_conf = dag_run.conf if dag_run else {}
+    run_conf = raw_conf if isinstance(raw_conf, dict) else {}
+
+    demo_mode_raw = run_conf.get(
+        "demo_mode",
+        _safe_variable_get("demo_mode", "false"),
+    )
+
+    # Debug visibility in task logs
+    print(
+        f"[demo_settings] raw_run_conf={run_conf}, "
+        f"demo_mode_raw={demo_mode_raw}, "
+        f"dag_run_present={dag_run is not None}"
+    )
+
+    return {
+        "enabled": _as_bool(demo_mode_raw),
+        "leetcode_limit": _as_int(
+            run_conf.get(
+                "demo_limit_leetcode",
+                _safe_variable_get("demo_limit_leetcode", "10"),
+            ),
+            10,
+        ),
+        "gfg_limit": _as_int(
+            run_conf.get(
+                "demo_limit_gfg",
+                _safe_variable_get("demo_limit_gfg", "10"),
+            ),
+            10,
+        ),
+        "gfg_max_sitemaps": _as_int(
+            run_conf.get(
+                "demo_limit_gfg_sitemaps",
+                _safe_variable_get("demo_limit_gfg_sitemaps", "2"),
+            ),
+            2,
+        ),
+        "medium_limit": _as_int(
+            run_conf.get(
+                "demo_limit_medium",
+                _safe_variable_get("demo_limit_medium", "10"),
+            ),
+            10,
+        ),
+        "medium_max_sitemaps": _as_int(
+            run_conf.get(
+                "demo_medium_max_sitemaps",
+                _safe_variable_get("demo_medium_max_sitemaps", "1"),
+            ),
+            1,
+        ),
+    }
+
+
 def scrape_geeksforgeeks(**kwargs):
     print("=" * 60)
     print("Starting GFG scraper - BULK MODE")
     print("=" * 60)
+    demo = _demo_settings(**kwargs)
     storage = GCSBackend(bucket_name=GCS_BUCKET_NAME, project_id=GCP_PROJECT_ID)
+    config = GFGScraperConfigs()
     scraper = GFGScraper(
         scrape_type='bulk',
+        config=config,
         storage=storage
     )
+
+    if demo["enabled"]:
+        limit = max(0, demo["gfg_limit"])
+        sitemap_limit = max(0, demo["gfg_max_sitemaps"])
+        # Limit sitemap discovery for demo runs.
+        orig_filter = scraper._filter_sitemaps
+        scraper._filter_sitemaps = lambda sitemaps, _orig=orig_filter: _orig(sitemaps)[:sitemap_limit]
+        # Limit actual article scraping
+        orig_scrape_articles = scraper._scrape_articles
+        scraper._scrape_articles = lambda urls, _orig=orig_scrape_articles: _orig(urls[:limit])
+        print(f"Demo mode ON — limiting GFG to {sitemap_limit} sitemaps and {limit} articles")
+
     scraper.run()
     print(f"GFG Complete: {scraper.stats['files_collected']} files")
     return scraper.stats
@@ -65,9 +185,17 @@ def scrape_leetcode(**kwargs):
     print("=" * 60)
     print("Starting LeetCode scraper - BULK MODE")
     print("=" * 60)
+    demo = _demo_settings(**kwargs)
     storage = GCSBackend(bucket_name=GCS_BUCKET_NAME, project_id=GCP_PROJECT_ID)
+    config = LeetCodeScraperConfigs()
+
+    if demo["enabled"]:
+        config.BULK_MAX_POSTS = max(0, demo["leetcode_limit"])
+        print(f"Demo mode ON — limiting LeetCode BULK_MAX_POSTS to {config.BULK_MAX_POSTS}")
+
     scraper = LeetCodeScraper(
         scrape_type='bulk',
+        config=config,
         storage=storage,
         fetch_comments=False
     )
@@ -80,12 +208,29 @@ def scrape_medium(**kwargs):
     print("=" * 60)
     print("Starting Medium scraper - BULK MODE")
     print("=" * 60)
+    demo = _demo_settings(**kwargs)
     storage = GCSBackend(bucket_name=GCS_BUCKET_NAME, project_id=GCP_PROJECT_ID)
+    config = MediumScraperConfigs()
+
+    if demo["enabled"]:
+        config.MAX_SITEMAPS = max(0, demo["medium_max_sitemaps"])
+        print(
+            f"Demo mode ON — limiting Medium MAX_SITEMAPS to {config.MAX_SITEMAPS} "
+            f"and articles to {max(0, demo['medium_limit'])}"
+        )
+
     scraper = MediumScraper(
         scrape_type='bulk',
+        config=config,
         storage=storage,
         log_dir='/tmp/medium_logs'
     )
+
+    if demo["enabled"]:
+        limit = max(0, demo["medium_limit"])
+        orig_scrape_all_articles = scraper.scrape_all_articles
+        scraper.scrape_all_articles = lambda urls, _orig=orig_scrape_all_articles: _orig(urls[:limit])
+
     scraper.run()
     print(f"Medium Complete: {scraper.stats['success']} files")
     return scraper.stats
@@ -146,7 +291,7 @@ def run_preprocessing(**kwargs):
         raise AirflowFailException(
             f"Preprocessing failed for batch '{batch_id}'. "
             f"Input={report.input_count}, Output={report.output_count}. "
-            f"Check report: processed/{batch_id}_report.json"
+            f"Check report: manifests/{batch_id}/preprocessing_report.json"
         )
 
     print("\n" + "=" * 60)
@@ -174,7 +319,7 @@ def validate_processed_data(**kwargs):
     processed_prefix = f"processed/{batch_id}/"
     gcs_count = _count_blobs(processed_prefix)
 
-    report_path = f"processed/{batch_id}_report.json"
+    report_path = f"manifests/{batch_id}/preprocessing_report.json"
     report_exists = _count_blobs(report_path, suffix=None) > 0
 
     print("\n" + "=" * 60)
