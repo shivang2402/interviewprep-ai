@@ -12,11 +12,12 @@ Covers:
 - DAG loads without errors
 - DAG ID matches expected value
 - All expected tasks are present
-- Task count is correct (10 tasks)
+- Task count is correct (13 tasks)
 - Dependency graph matches expected flow:
     start -> [scrape_gfg, scrape_leetcode, scrape_medium] (parallel)
           -> print_summary -> run_preprocessing -> validate_processed_data
-          -> load_to_database -> complete -> build_email -> send_notification_email
+          -> load_to_database -> run_chunking -> run_embeddings
+          -> complete -> build_email -> send_notification_email
 - Scrapers run in parallel (same upstream: start)
 - Email tasks use trigger_rule='all_done'
 """
@@ -96,6 +97,8 @@ EXPECTED_TASKS = {
     "run_preprocessing",
     "validate_processed_data",
     "load_to_database",
+    "run_chunking",
+    "run_embeddings",
     "complete",
     "build_email",
     "send_notification_email",
@@ -109,8 +112,8 @@ class TestTasksPresent:
         assert not missing, f"Missing tasks: {missing}"
 
     def test_task_count(self, dag):
-        assert len(dag.tasks) == 11, (
-            f"Expected 11 tasks, got {len(dag.tasks)}: "
+        assert len(dag.tasks) == 13, (
+            f"Expected 13 tasks, got {len(dag.tasks)}: "
             f"{sorted(_get_task_ids(dag))}"
         )
 
@@ -145,7 +148,8 @@ class TestDependencyChain:
     """
     Validates the linear dependency chain after the parallel scrapers:
     scrapers -> print_summary -> run_preprocessing -> validate_processed_data
-             -> load_to_database -> complete -> build_email -> send_notification_email
+             -> load_to_database -> run_chunking -> run_embeddings
+             -> complete -> build_email -> send_notification_email
     """
 
     def test_scrapers_upstream_of_summary(self, dag):
@@ -164,9 +168,17 @@ class TestDependencyChain:
         upstream = _get_upstream_ids(dag, "load_to_database")
         assert "validate_processed_data" in upstream
 
-    def test_db_load_upstream_of_complete(self, dag):
-        upstream = _get_upstream_ids(dag, "complete")
+    def test_db_load_upstream_of_chunking(self, dag):
+        upstream = _get_upstream_ids(dag, "run_chunking")
         assert "load_to_database" in upstream
+
+    def test_chunking_upstream_of_embeddings(self, dag):
+        upstream = _get_upstream_ids(dag, "run_embeddings")
+        assert "run_chunking" in upstream
+
+    def test_embeddings_upstream_of_complete(self, dag):
+        upstream = _get_upstream_ids(dag, "complete")
+        assert "run_embeddings" in upstream
 
     def test_complete_upstream_of_build_email(self, dag):
         upstream = _get_upstream_ids(dag, "build_email")
