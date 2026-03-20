@@ -2,6 +2,7 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 from airflow.operators.email import EmailOperator
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.models import Variable
 from airflow.exceptions import AirflowFailException
 from datetime import datetime, timedelta
@@ -17,8 +18,6 @@ from src.scrapers.configs.gfg import GFGScraperConfigs
 from src.scrapers.configs.leetcode import LeetCodeScraperConfigs
 from src.scrapers.configs.medium import MediumScraperConfigs
 from src.storage.gcs_backend import GCSBackend
-from src.chunking.pipeline import run as run_chunking_pipeline
-from src.embeddings.pipeline import run as run_embeddings_pipeline
 from google.cloud import storage as gcs
 
 logger = logging.getLogger("interviewprep.dag")
@@ -411,20 +410,6 @@ def load_to_database(**kwargs):
     return result
 
 
-def chunking_task(**kwargs):
-    """Run the chunking pipeline to split documents into chunks."""
-    logger.info("Starting chunking pipeline...")
-    run_chunking_pipeline()
-    logger.info("Chunking pipeline completed.")
-
-
-def embeddings_task(**kwargs):
-    """Run the embeddings pipeline to generate vector embeddings for chunks."""
-    logger.info("Starting embeddings pipeline...")
-    run_embeddings_pipeline()
-    logger.info("Embeddings pipeline completed.")
-
-
 def build_email_body(**kwargs):
     """Build email body with pipeline results for both success and failure."""
     ti = kwargs['ti']
@@ -520,10 +505,10 @@ default_args = {
 dag = DAG(
     'interview_scraping_pipeline',
     default_args=default_args,
-    description='Scrape interview experiences, preprocess, validate, load, chunk, embed, and notify',
+    description='Scrape interview experiences, preprocess, validate, load, and trigger chunking/embedding',
     schedule=None,
     catchup=False,
-    tags=['scraping', 'preprocessing', 'database', 'chunking', 'embeddings', 'bulk', 'production'],
+    tags=['scraping', 'preprocessing', 'database', 'bulk', 'production'],
 )
 
 start = BashOperator(
@@ -585,21 +570,11 @@ db_load = PythonOperator(
     dag=dag,
 )
 
-run_chunking = PythonOperator(
-    task_id='run_chunking',
-    python_callable=chunking_task,
-    execution_timeout=timedelta(hours=2),
-    retries=2,
-    retry_delay=timedelta(minutes=2),
-    dag=dag,
-)
-
-run_embeddings = PythonOperator(
-    task_id='run_embeddings',
-    python_callable=embeddings_task,
-    execution_timeout=timedelta(hours=4),
-    retries=2,
-    retry_delay=timedelta(minutes=5),
+trigger_chunking_embedding = TriggerDagRunOperator(
+    task_id='trigger_chunking_embedding',
+    trigger_dag_id='chunking_embedding_pipeline',
+    wait_for_completion=True,
+    poke_interval=60,
     dag=dag,
 )
 
@@ -627,4 +602,4 @@ send_email = EmailOperator(
     dag=dag,
 )
 
-start >> [scrape_gfg, scrape_leetcode, scrape_medium] >> summary >> preprocess >> validate >> db_load >> run_chunking >> run_embeddings >> complete >> build_email >> send_email
+start >> [scrape_gfg, scrape_leetcode, scrape_medium] >> summary >> preprocess >> validate >> db_load >> trigger_chunking_embedding >> complete >> build_email >> send_email
