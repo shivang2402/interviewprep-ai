@@ -170,8 +170,6 @@ def run():
 
     batch: list[DocumentChunk] = []
 
-    docs = docs[:5]
-
     for doc in docs:
         try:
             log.info(f"Chunking {doc['document_id']}...")
