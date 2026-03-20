@@ -623,6 +623,7 @@ send_email = EmailOperator(
     subject="{{ ti.xcom_pull(task_ids='build_email', key='email_subject') }}",
     html_content="{{ ti.xcom_pull(task_ids='build_email', key='email_body') }}",
     trigger_rule='all_done',
+    soft_fail=True,
     dag=dag,
 )
 
