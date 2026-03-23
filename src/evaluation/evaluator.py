@@ -22,7 +22,9 @@ from dataclasses import dataclass, field
 from typing import Optional
 from collections import defaultdict
 from enum import Enum
+from pathlib import Path
 
+import yaml
 import numpy as np
 import mlflow
 import psycopg2
@@ -30,15 +32,6 @@ from sentence_transformers import SentenceTransformer
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# 0. Helper
-# ---------------------------------------------------------------------------
-
-def sanitize_key(k: str) -> str:
-    """Replace '@' with '_at_' so MLflow accepts the metric name."""
-    return k.replace("@", "_at_")
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +136,82 @@ class ModelConfig:
 
 
 # ---------------------------------------------------------------------------
-# 2. Eval Dataset Loader
+# 2. Config Loader
+# ---------------------------------------------------------------------------
+
+def load_eval_config() -> dict:
+    """
+    Parse eval_config.yaml and return:
+    {
+        "relevance_threshold": int,
+        "max_k": int,
+        "configs": list[ModelConfig],
+    }
+    """
+    config_path = Path(__file__).parent / "retrieval_model_configs.yaml"
+    path = Path(config_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Config file not found: {path.resolve()}")
+
+    with open(path, "r") as f:
+        raw = yaml.safe_load(f)
+
+    eval_settings = raw["evaluation"]
+    relevance_threshold = eval_settings.get("relevance_threshold", 1)
+    max_k = eval_settings.get("max_k", 15)
+
+    configs = []
+    for entry in raw["configs"]:
+        bm25 = BM25Config()
+        if "bm25_config" in entry:
+            b = entry["bm25_config"]
+            bm25 = BM25Config(
+                search_column=b.get("search_column", "chunk_text"),
+                tsvector_column=b.get("tsvector_column", "chunk_tsvector"),
+                search_language=b.get("search_language", "english"),
+                table=b.get("table", "document_chunks"),
+                chunk_id_column=b.get("chunk_id_column", "chunk_id"),
+            )
+
+        hybrid = HybridConfig()
+        if "hybrid_config" in entry:
+            h = entry["hybrid_config"]
+            hybrid = HybridConfig(
+                rrf_k=h.get("rrf_k", 60),
+                vector_weight=h.get("vector_weight", 0.5),
+                bm25_weight=h.get("bm25_weight", 0.5),
+                vector_top_k=h.get("vector_top_k", 30),
+                bm25_top_k=h.get("bm25_top_k", 30),
+            )
+
+        configs.append(ModelConfig(
+            model_name=entry["model_name"],
+            embedding_dim=entry["embedding_dim"],
+            chunk_size=entry["chunk_size"],
+            overlap_size=entry["overlap_size"],
+            retrieval_mode=RetrievalMode(entry.get("retrieval_mode", "vector")),
+            relevance_threshold=entry.get("relevance_threshold", relevance_threshold),
+            index_type=entry.get("index_type", "hnsw"),
+            hnsw_m=entry.get("hnsw_m", 16),
+            hnsw_ef_construction=entry.get("hnsw_ef_construction", 64),
+            hnsw_ef_search=entry.get("hnsw_ef_search", 100),
+            distance_metric=entry.get("distance_metric", "cosine"),
+            embeddings_table=entry.get("embeddings_table", "document_chunks"),
+            model_name_column_value=entry.get("model_name_column_value", ""),
+            bm25_config=bm25,
+            hybrid_config=hybrid,
+        ))
+
+    logger.info(f"Loaded {len(configs)} model configs from {path}")
+    return {
+        "relevance_threshold": relevance_threshold,
+        "max_k": max_k,
+        "configs": configs,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 3. Eval Dataset Loader
 # ---------------------------------------------------------------------------
 
 class EvalDatasetLoader:
@@ -202,7 +270,7 @@ class EvalDatasetLoader:
 
 
 # ---------------------------------------------------------------------------
-# 3. Retrieval Strategies
+# 4. Retrieval Strategies
 # ---------------------------------------------------------------------------
 
 class RetrievalStrategy(ABC):
@@ -306,7 +374,7 @@ def build_strategy(db_conn, config: ModelConfig) -> RetrievalStrategy:
 
 
 # ---------------------------------------------------------------------------
-# 4. Eval Retriever
+# 5. Eval Retriever
 # ---------------------------------------------------------------------------
 
 class EvalRetriever:
@@ -343,15 +411,10 @@ class EvalRetriever:
 
 
 # ---------------------------------------------------------------------------
-# 5. Metrics Calculator
+# 6. Metrics Calculator
 # ---------------------------------------------------------------------------
 
 class MetricsCalculator:
-    """
-    All metric keys use '_at_' instead of '@' throughout (e.g. mrr_at_10).
-    This ensures MLflow never sees invalid characters anywhere in the pipeline.
-    """
-
     K_VALUES = [5, 10, 15]
 
     def __init__(self, relevance_threshold: int = 1):
@@ -402,6 +465,12 @@ class MetricsCalculator:
         return ndcg_sum / len(results) if results else 0.0
 
     def score_distribution_by_grade(self, results, query_map):
+        """
+        Buckets retrieval scores by relevance grade.
+        Returns:
+          - flat_stats: single metric (grade2 vs grade0 gap) for MLflow
+          - buckets: raw score lists per grade for artifact JSON (debugging only)
+        """
         buckets: dict[str, list[float]] = {"grade_0": [], "grade_1": [], "grade_2": [], "unjudged": []}
         for res in results:
             grades = query_map[res.query_id].relevance_grades
@@ -410,34 +479,12 @@ class MetricsCalculator:
                 buckets[bucket].append(score)
 
         flat_stats = {}
-        for bucket_name, scores in buckets.items():
-            prefix = f"score_{bucket_name}"
-            if not scores:
-                flat_stats[f"{prefix}_mean"] = 0.0
-                flat_stats[f"{prefix}_count"] = 0
-                continue
-            arr = np.array(scores)
-            flat_stats[f"{prefix}_mean"] = float(np.mean(arr))
-            flat_stats[f"{prefix}_std"] = float(np.std(arr))
-            flat_stats[f"{prefix}_median"] = float(np.median(arr))
-            flat_stats[f"{prefix}_count"] = len(scores)
-
         if buckets["grade_2"] and buckets["grade_0"]:
-            flat_stats["separation_grade2_vs_grade0"] = float(np.mean(buckets["grade_2"])) - float(np.mean(buckets["grade_0"]))
-        if buckets["grade_2"] and buckets["grade_1"]:
-            flat_stats["separation_grade2_vs_grade1"] = float(np.mean(buckets["grade_2"])) - float(np.mean(buckets["grade_1"]))
-        if buckets["grade_1"] and buckets["grade_0"]:
-            flat_stats["separation_grade1_vs_grade0"] = float(np.mean(buckets["grade_1"])) - float(np.mean(buckets["grade_0"]))
+            flat_stats["score_separation_grade2_vs_grade0"] = round(
+                float(np.mean(buckets["grade_2"])) - float(np.mean(buckets["grade_0"])), 4
+            )
 
         return flat_stats, buckets
-
-    def storage_footprint_mb(self, db_conn, config: ModelConfig) -> float:
-        if config.retrieval_mode == RetrievalMode.BM25:
-            return 0.0
-        with db_conn.cursor() as cur:
-            cur.execute(f"SELECT COUNT(*) FROM {config.embeddings_table}")
-            count = cur.fetchone()[0]
-        return round((count * (config.embedding_dim * 4 + 64)) / (1024 * 1024), 2)
 
     def per_category_metrics(self, results, query_map):
         by_category: dict[str, list] = defaultdict(list)
@@ -449,7 +496,6 @@ class MetricsCalculator:
             cat_qmap = {r.query_id: query_map[r.query_id] for r in cat_results}
             cat_data = {"count": len(cat_results)}
             for k in self.K_VALUES:
-                # NOTE: keys use '@' here — this dict goes into JSON artifacts only, NOT MLflow
                 cat_data[f"mrr@{k}"] = round(self.mrr_at_k(cat_results, cat_qmap, k), 4)
                 cat_data[f"recall@{k}"] = round(self.recall_at_k(cat_results, cat_qmap, k), 4)
                 cat_data[f"precision@{k}"] = round(self.precision_at_k(cat_results, cat_qmap, k), 4)
@@ -458,14 +504,8 @@ class MetricsCalculator:
         return breakdown
 
     def compute_all(self, results, query_map, db_conn, config: ModelConfig):
-        """
-        Returns (flat_metrics, artifacts).
-        flat_metrics: ALL keys use '_at_' — safe for mlflow.log_metrics() with NO further sanitization needed.
-        artifacts: JSON only, '@' in keys is fine.
-        """
         flat_metrics = {}
 
-        # ── Primary metrics — keys use _at_ from the start ──
         for k in self.K_VALUES:
             flat_metrics[f"mrr_at_{k}"]       = round(self.mrr_at_k(results, query_map, k), 4)
             flat_metrics[f"recall_at_{k}"]    = round(self.recall_at_k(results, query_map, k), 4)
@@ -474,7 +514,6 @@ class MetricsCalculator:
 
         score_stats, score_raw = self.score_distribution_by_grade(results, query_map)
         flat_metrics.update(score_stats)
-        flat_metrics["storage_mb"] = self.storage_footprint_mb(db_conn, config)
 
         category_breakdown = self.per_category_metrics(results, query_map)
 
@@ -490,9 +529,9 @@ class MetricsCalculator:
                 "num_judged": len(q.relevance_grades),
                 "num_relevant": len(relevant),
                 "grade_distribution": {
-                    "highly_relevant":   sum(1 for g in q.relevance_grades.values() if g == 2),
+                    "highly_relevant":    sum(1 for g in q.relevance_grades.values() if g == 2),
                     "partially_relevant": sum(1 for g in q.relevance_grades.values() if g == 1),
-                    "not_relevant":      sum(1 for g in q.relevance_grades.values() if g == 0),
+                    "not_relevant":       sum(1 for g in q.relevance_grades.values() if g == 0),
                 },
                 "num_relevant_in_top10": len(set(res.retrieved_chunk_ids[:10]) & relevant),
                 "top1_chunk_id": res.retrieved_chunk_ids[0] if res.retrieved_chunk_ids else None,
@@ -512,25 +551,19 @@ class MetricsCalculator:
 
 
 # ---------------------------------------------------------------------------
-# 6. Selection Score
+# 7. Selection Score
 # ---------------------------------------------------------------------------
 
 def compute_selection_score(metrics: dict) -> float:
-    """
-    Reads _at_ keys — consistent with compute_all output.
-    0.47 * NDCG@10 + 0.29 * Recall@10 + 0.18 * MRR@5 + 0.06 * (1/storage)
-    """
     ndcg_10    = metrics.get("ndcg_at_10", 0)
     recall_10  = metrics.get("recall_at_10", 0)
     mrr_5      = metrics.get("mrr_at_5", 0)
-    storage_mb = metrics.get("storage_mb", 60)
-    storage_score = min(1.0, 120.0 / max(storage_mb, 1))
 
-    return round(0.47 * ndcg_10 + 0.29 * recall_10 + 0.18 * mrr_5 + 0.06 * storage_score, 4)
+    return round(0.50 * ndcg_10 + 0.35 * recall_10 + 0.15 * mrr_5, 4)
 
 
 # ---------------------------------------------------------------------------
-# 7. Experiment Runner
+# 8. Experiment Runner
 # ---------------------------------------------------------------------------
 
 class ExperimentRunner:
@@ -540,7 +573,7 @@ class ExperimentRunner:
         self.query_map = {q.query_id: q for q in eval_queries}
         self.metrics_calc = MetricsCalculator(relevance_threshold=relevance_threshold)
 
-    def run(self, config: ModelConfig, max_k: int = 10) -> dict:
+    def run(self, config: ModelConfig, max_k: int = 15) -> dict:
         logger.info(f"{'='*60}")
         logger.info(f"Evaluating: {config.run_name}")
         logger.info(f"{'='*60}")
@@ -563,7 +596,6 @@ class ExperimentRunner:
         return flat_metrics
 
     def _log_to_mlflow(self, config: ModelConfig, metrics: dict, artifacts: dict):
-        # metrics already have _at_ keys — log directly, NO sanitization needed
         with mlflow.start_run(run_name=config.run_name):
             mlflow.log_params({**config.to_params_dict(), "num_eval_queries": len(self.queries)})
             mlflow.log_metrics(metrics)
@@ -580,7 +612,7 @@ class ExperimentRunner:
 
 
 # ---------------------------------------------------------------------------
-# 8. Pipeline Orchestrator
+# 9. Pipeline Orchestrator
 # ---------------------------------------------------------------------------
 
 class PipelineOrchestrator:
@@ -588,7 +620,7 @@ class PipelineOrchestrator:
         self.db_config = db_config
         self.mlflow_uri = mlflow_tracking_uri
 
-    def run(self, configs: list[ModelConfig], relevance_threshold: int = 1) -> dict[str, dict]:
+    def run(self, configs: list[ModelConfig], relevance_threshold: int = 1, max_k: int = 15) -> dict[str, dict]:
         mlflow.set_tracking_uri(self.mlflow_uri)
         mlflow.set_experiment("interviewprep-retrieval-eval")
         conn = psycopg2.connect(**self.db_config)
@@ -601,7 +633,7 @@ class PipelineOrchestrator:
 
         for config in configs:
             try:
-                metrics = runner.run(config)
+                metrics = runner.run(config, max_k=max_k)
                 all_metrics[config.run_name] = metrics
             except Exception as e:
                 logger.error(f"FAILED: {config.run_name} — {e}", exc_info=True)
@@ -617,13 +649,12 @@ class PipelineOrchestrator:
             logger.warning("No configs completed evaluation.")
             return
 
-        # all keys are already _at_ — pull them directly
         summary = sorted(
             [
                 {"config": name, **{
                     k: v for k, v in m.items()
                     if k in ("selection_score", "ndcg_at_10", "recall_at_10",
-                             "precision_at_10", "mrr_at_5", "storage_mb")
+                             "precision_at_10", "mrr_at_5")
                 }}
                 for name, m in all_metrics.items()
             ],
@@ -641,7 +672,7 @@ class PipelineOrchestrator:
             mlflow.log_params({"best_config": best["config"]})
             mlflow.log_metrics({
                 "best_selection_score": best["selection_score"],
-                "best_ndcg_at_10":      best["ndcg_at_10"],
+                "best_ndcg_at_10":     best["ndcg_at_10"],
             })
 
         self._apply_decision_gate(summary)
@@ -681,50 +712,29 @@ class PipelineOrchestrator:
 
 
 # ---------------------------------------------------------------------------
-# 9. Entry Point
+# 10. Entry Point
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
 
     DB_CONFIG = {
         "host": "34.148.0.165",
-        "port": 5432,
         "dbname": "interviewprep-ai-database",
         "user": "postgres",
         "password": "admin",
+        "port": 5432,
+        "sslmode": "require",
     }
+    MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
 
-    bm25 = BM25Config(
-        search_column="chunk_text",
-        tsvector_column="chunk_tsvector",
-        search_language="english",
-        table="document_chunks",
-        chunk_id_column="chunk_id",
+    cfg = load_eval_config()
+
+    orchestrator = PipelineOrchestrator(
+        db_config=DB_CONFIG,
+        mlflow_tracking_uri=MLFLOW_TRACKING_URI,
     )
-
-    CONFIGS = [
-        ModelConfig(
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
-            embedding_dim=384, chunk_size=512, overlap_size=64,
-            retrieval_mode=RetrievalMode.VECTOR,
-        ),
-        ModelConfig(
-            model_name="bm25-baseline",
-            embedding_dim=0, chunk_size=512, overlap_size=64,
-            retrieval_mode=RetrievalMode.BM25,
-            bm25_config=bm25,
-        ),
-        ModelConfig(
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
-            embedding_dim=384, chunk_size=512, overlap_size=64,
-            retrieval_mode=RetrievalMode.HYBRID,
-            bm25_config=bm25,
-            hybrid_config=HybridConfig(
-                rrf_k=60, vector_weight=0.5, bm25_weight=0.5,
-                vector_top_k=30, bm25_top_k=30,
-            ),
-        ),
-    ]
-
-    orchestrator = PipelineOrchestrator(DB_CONFIG)
-    results = orchestrator.run(CONFIGS, relevance_threshold=1)
+    results = orchestrator.run(
+        configs=cfg["configs"],
+        relevance_threshold=cfg["relevance_threshold"],
+        max_k=cfg["max_k"],
+    )
