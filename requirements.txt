@@ -15,4 +15,4 @@ pandas
 pgvector
 rank-bm25
 openai
-mlflow-skinny
+mlflow
