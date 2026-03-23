@@ -28,6 +28,7 @@ import yaml
 import numpy as np
 import mlflow
 import psycopg2
+from datetime import datetime
 from sentence_transformers import SentenceTransformer
 
 logging.basicConfig(level=logging.INFO)
@@ -486,6 +487,14 @@ class MetricsCalculator:
 
         return flat_stats, buckets
 
+    def storage_footprint_mb(self, db_conn, config: ModelConfig) -> float:
+        if config.retrieval_mode == RetrievalMode.BM25:
+            return 0.0
+        with db_conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) FROM {config.embeddings_table}")
+            count = cur.fetchone()[0]
+        return round((count * (config.embedding_dim * 4 + 64)) / (1024 * 1024), 2)
+
     def per_category_metrics(self, results, query_map):
         by_category: dict[str, list] = defaultdict(list)
         for res in results:
@@ -514,6 +523,7 @@ class MetricsCalculator:
 
         score_stats, score_raw = self.score_distribution_by_grade(results, query_map)
         flat_metrics.update(score_stats)
+        flat_metrics["storage_mb"] = self.storage_footprint_mb(db_conn, config)
 
         category_breakdown = self.per_category_metrics(results, query_map)
 
@@ -558,8 +568,10 @@ def compute_selection_score(metrics: dict) -> float:
     ndcg_10    = metrics.get("ndcg_at_10", 0)
     recall_10  = metrics.get("recall_at_10", 0)
     mrr_5      = metrics.get("mrr_at_5", 0)
+    storage_mb = metrics.get("storage_mb", 60)
+    storage_score = min(1.0, 120.0 / max(storage_mb, 1))
 
-    return round(0.50 * ndcg_10 + 0.35 * recall_10 + 0.15 * mrr_5, 4)
+    return round(0.47 * ndcg_10 + 0.29 * recall_10 + 0.18 * mrr_5 + 0.06 * storage_score, 4)
 
 
 # ---------------------------------------------------------------------------
@@ -573,7 +585,7 @@ class ExperimentRunner:
         self.query_map = {q.query_id: q for q in eval_queries}
         self.metrics_calc = MetricsCalculator(relevance_threshold=relevance_threshold)
 
-    def run(self, config: ModelConfig, max_k: int = 15) -> dict:
+    def run(self, config: ModelConfig, max_k: int = 15, parent_run_id: str = None) -> dict:
         logger.info(f"{'='*60}")
         logger.info(f"Evaluating: {config.run_name}")
         logger.info(f"{'='*60}")
@@ -584,7 +596,7 @@ class ExperimentRunner:
         flat_metrics, artifacts = self.metrics_calc.compute_all(results, self.query_map, self.conn, config)
         flat_metrics["selection_score"] = compute_selection_score(flat_metrics)
 
-        self._log_to_mlflow(config, flat_metrics, artifacts)
+        self._log_to_mlflow(config, flat_metrics, artifacts, parent_run_id)
 
         logger.info(
             f"Results: selection_score={flat_metrics['selection_score']:.4f} | "
@@ -595,8 +607,11 @@ class ExperimentRunner:
         )
         return flat_metrics
 
-    def _log_to_mlflow(self, config: ModelConfig, metrics: dict, artifacts: dict):
-        with mlflow.start_run(run_name=config.run_name):
+    def _log_to_mlflow(self, config: ModelConfig, metrics: dict, artifacts: dict, parent_run_id: str = None):
+        with mlflow.start_run(run_name=config.run_name, nested=True):
+            if parent_run_id:
+                mlflow.set_tag("mlflow.parentRunId", parent_run_id)
+            mlflow.set_tag("run_type", "model_eval")
             mlflow.log_params({**config.to_params_dict(), "num_eval_queries": len(self.queries)})
             mlflow.log_metrics(metrics)
 
@@ -620,7 +635,9 @@ class PipelineOrchestrator:
         self.db_config = db_config
         self.mlflow_uri = mlflow_tracking_uri
 
-    def run(self, configs: list[ModelConfig], relevance_threshold: int = 1, max_k: int = 15) -> dict[str, dict]:
+    def run(self, configs: list[ModelConfig], relevance_threshold: int = 1,
+            max_k: int = 15, run_label: str = "") -> dict[str, dict]:
+
         mlflow.set_tracking_uri(self.mlflow_uri)
         mlflow.set_experiment("interviewprep-retrieval-eval")
         conn = psycopg2.connect(**self.db_config)
@@ -631,20 +648,40 @@ class PipelineOrchestrator:
         runner = ExperimentRunner(conn, queries, relevance_threshold=relevance_threshold)
         all_metrics: dict[str, dict] = {}
 
-        for config in configs:
-            try:
-                metrics = runner.run(config, max_k=max_k)
-                all_metrics[config.run_name] = metrics
-            except Exception as e:
-                logger.error(f"FAILED: {config.run_name} — {e}", exc_info=True)
-                conn.rollback()
-                continue
+        parent_name = f"pipeline_{run_label}" if run_label else f"pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+        with mlflow.start_run(run_name=parent_name) as parent_run:
+            mlflow.set_tag("run_type", "pipeline_parent")
+            mlflow.set_tag("run_label", run_label)
+            parent_run_id = parent_run.info.run_id
+
+            for config in configs:
+                try:
+                    metrics = runner.run(config, max_k=max_k, parent_run_id=parent_run_id)
+                    all_metrics[config.run_name] = metrics
+                except Exception as e:
+                    logger.error(f"FAILED: {config.run_name} — {e}", exc_info=True)
+                    conn.rollback()
+                    continue
+
+            self._log_comparison(all_metrics, parent_run_id)
+
+            # Log best metrics on the parent run for cross-pipeline comparison
+            if all_metrics:
+                best_name = max(all_metrics, key=lambda n: all_metrics[n].get("selection_score", 0))
+                best = all_metrics[best_name]
+                mlflow.log_metrics({
+                    "best_selection_score": best["selection_score"],
+                    "best_ndcg_at_10":     best["ndcg_at_10"],
+                    "best_recall_at_10":   best["recall_at_10"],
+                    "best_mrr_at_5":       best["mrr_at_5"],
+                })
+                mlflow.log_params({"best_config": best_name})
 
         conn.close()
-        self._log_comparison(all_metrics)
         return all_metrics
 
-    def _log_comparison(self, all_metrics: dict[str, dict]):
+    def _log_comparison(self, all_metrics: dict[str, dict], parent_run_id: str = None):
         if not all_metrics:
             logger.warning("No configs completed evaluation.")
             return
@@ -654,7 +691,7 @@ class PipelineOrchestrator:
                 {"config": name, **{
                     k: v for k, v in m.items()
                     if k in ("selection_score", "ndcg_at_10", "recall_at_10",
-                             "precision_at_10", "mrr_at_5")
+                             "precision_at_10", "mrr_at_5", "storage_mb")
                 }}
                 for name, m in all_metrics.items()
             ],
@@ -662,7 +699,11 @@ class PipelineOrchestrator:
             reverse=True,
         )
 
-        with mlflow.start_run(run_name="model_comparison_summary"):
+        with mlflow.start_run(run_name="comparison_summary", nested=True):
+            if parent_run_id:
+                mlflow.set_tag("mlflow.parentRunId", parent_run_id)
+            mlflow.set_tag("run_type", "comparison")
+
             path = "/tmp/model_comparison.json"
             with open(path, "w") as f:
                 json.dump(summary, f, indent=2)
@@ -729,6 +770,8 @@ if __name__ == "__main__":
 
     cfg = load_eval_config()
 
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
     orchestrator = PipelineOrchestrator(
         db_config=DB_CONFIG,
         mlflow_tracking_uri=MLFLOW_TRACKING_URI,
@@ -737,4 +780,5 @@ if __name__ == "__main__":
         configs=cfg["configs"],
         relevance_threshold=cfg["relevance_threshold"],
         max_k=cfg["max_k"],
+        run_label = datetime.now().strftime("%Y%m%d_%H%M%S")
     )
