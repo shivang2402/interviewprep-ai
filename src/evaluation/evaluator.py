@@ -553,6 +553,7 @@ class MetricsCalculator:
         else:
             mitigation.append("No significant retrieval disparity detected across query categories.")
 
+
         bias_artifact = {
             "slices": category_breakdown,
             "overall_mean": overall_mean,
