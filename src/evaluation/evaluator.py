@@ -161,6 +161,8 @@ def load_eval_config() -> dict:
     relevance_threshold = eval_settings.get("relevance_threshold", 1)
     max_k = eval_settings.get("max_k", 15)
 
+    mlflow_tracking_uri = raw["mlflow"]["tracking_uri"]
+
     configs = []
     for entry in raw["configs"]:
         bm25 = BM25Config()
@@ -205,6 +207,7 @@ def load_eval_config() -> dict:
 
     logger.info(f"Loaded {len(configs)} model configs from {path}")
     return {
+        "mlflow_tracking_uri" : mlflow_tracking_uri,
         "relevance_threshold": relevance_threshold,
         "max_k": max_k,
         "configs": configs,
@@ -848,7 +851,6 @@ if __name__ == "__main__":
         "port": 5432,
         "sslmode": "require",
     }
-    MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
 
     cfg = load_eval_config()
 
@@ -856,7 +858,7 @@ if __name__ == "__main__":
 
     orchestrator = PipelineOrchestrator(
         db_config=DB_CONFIG,
-        mlflow_tracking_uri=MLFLOW_TRACKING_URI,
+        mlflow_tracking_uri=cfg["mlflow_tracking_uri"],
     )
     results = orchestrator.run(
         configs=cfg["configs"],
