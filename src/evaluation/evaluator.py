@@ -512,6 +512,59 @@ class MetricsCalculator:
             breakdown[cat] = cat_data
         return breakdown
 
+    def compute_bias_report(self, category_breakdown: dict) -> tuple[dict, dict]:
+        """
+        Slices retrieval metrics by query category and computes disparity scores.
+        Disparity = max(metric across slices) - min(metric across slices).
+        High disparity means some query categories are underserved by retrieval.
+
+        Returns:
+          - bias_mlflow_metrics: flat dict with _at_ keys, safe for mlflow.log_metrics()
+          - bias_artifact: full report dict for JSON artifact
+        """
+        if len(category_breakdown) < 2:
+            return {}, {"note": "Not enough categories to compute bias disparity."}
+
+        focus_metrics = ["ndcg@10", "recall@10", "mrr@10", "precision@10"]
+        overall_mean = {
+            m: round(np.mean([c[m] for c in category_breakdown.values() if m in c]), 4)
+            for m in focus_metrics
+        }
+
+        disparity = {}
+        underperforming = {}
+        for m in focus_metrics:
+            values = {cat: data[m] for cat, data in category_breakdown.items() if m in data}
+            if len(values) < 2:
+                continue
+            disparity[m] = round(max(values.values()) - min(values.values()), 4)
+            threshold = overall_mean[m] - 0.1  # flag slices >10pp below mean
+            underperforming[m] = [cat for cat, val in values.items() if val < threshold]
+
+        mitigation = []
+        flagged_cats = {cat for cats in underperforming.values() for cat in cats}
+        if flagged_cats:
+            mitigation.append(f"Underperforming slices detected: {', '.join(sorted(flagged_cats))}.")
+            mitigation.append("Consider upsampling queries from these categories in the eval/training set.")
+            mitigation.append("Apply query-time diversity constraints to ensure balanced retrieval.")
+        else:
+            mitigation.append("No significant retrieval disparity detected across query categories.")
+
+        bias_artifact = {
+            "slices": category_breakdown,
+            "overall_mean": overall_mean,
+            "disparity": disparity,
+            "underperforming_slices": {m: cats for m, cats in underperforming.items() if cats},
+            "mitigation_suggestions": mitigation,
+        }
+
+        # MLflow metrics use _at_ keys
+        bias_mlflow_metrics = {
+            f"bias_disparity_{m.replace('@', '_at_')}": v for m, v in disparity.items()
+        }
+
+        return bias_mlflow_metrics, bias_artifact
+
     def compute_all(self, results, query_map, db_conn, config: ModelConfig):
         flat_metrics = {}
 
@@ -526,6 +579,8 @@ class MetricsCalculator:
         flat_metrics["storage_mb"] = self.storage_footprint_mb(db_conn, config)
 
         category_breakdown = self.per_category_metrics(results, query_map)
+        bias_mlflow_metrics, bias_artifact = self.compute_bias_report(category_breakdown)
+        flat_metrics.update(bias_mlflow_metrics)
 
         per_query_detail = []
         for res in results:
@@ -553,6 +608,7 @@ class MetricsCalculator:
 
         artifacts = {
             "category_breakdown": category_breakdown,
+            "bias_report": bias_artifact,
             "per_query_results": per_query_detail,
             "score_distribution_by_grade": {k: [round(s, 4) for s in v] for k, v in score_raw.items()},
         }
@@ -691,13 +747,30 @@ class PipelineOrchestrator:
                 {"config": name, **{
                     k: v for k, v in m.items()
                     if k in ("selection_score", "ndcg_at_10", "recall_at_10",
-                             "precision_at_10", "mrr_at_5", "storage_mb")
+                             "precision_at_10", "mrr_at_5", "storage_mb",
+                             "bias_disparity_ndcg_at_10", "bias_disparity_recall_at_10")
                 }}
                 for name, m in all_metrics.items()
             ],
             key=lambda x: x["selection_score"],
             reverse=True,
         )
+
+        # Bias comparison: rank models by lowest disparity (least biased)
+        bias_key = "bias_disparity_ndcg_at_10"
+        bias_summary = sorted(
+            [{"config": s["config"], bias_key: s.get(bias_key, None)} for s in summary if s.get(bias_key) is not None],
+            key=lambda x: x[bias_key],
+        )
+        least_biased = bias_summary[0]["config"] if bias_summary else "N/A"
+        most_biased  = bias_summary[-1]["config"] if bias_summary else "N/A"
+
+        bias_comparison = {
+            "ranked_by_least_bias": bias_summary,
+            "least_biased_model": least_biased,
+            "most_biased_model": most_biased,
+            "note": "Bias measured as NDCG@10 disparity across query categories. Lower = more equitable retrieval.",
+        }
 
         with mlflow.start_run(run_name="comparison_summary", nested=True):
             if parent_run_id:
@@ -709,8 +782,13 @@ class PipelineOrchestrator:
                 json.dump(summary, f, indent=2)
             mlflow.log_artifact(path, artifact_path="comparison")
 
+            bias_path = "/tmp/bias_comparison.json"
+            with open(bias_path, "w") as f:
+                json.dump(bias_comparison, f, indent=2)
+            mlflow.log_artifact(bias_path, artifact_path="comparison")
+
             best = summary[0]
-            mlflow.log_params({"best_config": best["config"]})
+            mlflow.log_params({"best_config": best["config"], "least_biased_config": least_biased})
             mlflow.log_metrics({
                 "best_selection_score": best["selection_score"],
                 "best_ndcg_at_10":     best["ndcg_at_10"],
@@ -725,8 +803,12 @@ class PipelineOrchestrator:
             logger.info(
                 f"  {i}. {s['config']:55s} | score={s['selection_score']:.4f} | "
                 f"NDCG@10={s['ndcg_at_10']:.4f} | Recall@10={s['recall_at_10']:.4f} | "
-                f"Precision@10={s['precision_at_10']:.4f}"
+                f"Precision@10={s['precision_at_10']:.4f} | "
+                f"BiasDisparity={s.get('bias_disparity_ndcg_at_10', 'N/A')}"
             )
+        logger.info(f"{'='*80}")
+        logger.info(f"  Least biased model: {least_biased}")
+        logger.info(f"  Most  biased model: {most_biased}")
         logger.info(f"{'='*80}")
 
     def _apply_decision_gate(self, summary: list[dict]):
