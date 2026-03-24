@@ -286,10 +286,10 @@ jobs:
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           ARTIFACT_DIR="model_artifacts"
           mkdir -p "$ARTIFACT_DIR"
-
+          
           cp ${{ env.CONFIG_PATH }} "$ARTIFACT_DIR/retrieval_model_configs.yaml"
           cp eval_results.json "$ARTIFACT_DIR/eval_results.json"
-
+          
           cat > "$ARTIFACT_DIR/deployment_manifest.json" <<MANIFEST
           {
             "best_config": "${BEST_CONFIG}",
@@ -300,10 +300,10 @@ jobs:
             "pipeline_run": "${{ github.run_id }}"
           }
           MANIFEST
-
+          
           GCS_PATH="gs://interviewprep-ai-mlflow-artifacts/model-registry/retrieval-models/${TIMESTAMP}"
-          gsutil -m cp -r "$ARTIFACT_DIR"/* "$GCS_PATH/"
-
+          gcloud storage cp "$ARTIFACT_DIR"/* "$GCS_PATH/"
+          
           echo "gcs_path=$GCS_PATH" >> $GITHUB_OUTPUT
           echo "📤 Artifacts uploaded to: $GCS_PATH"
 
