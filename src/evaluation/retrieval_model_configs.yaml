@@ -24,6 +24,12 @@ configs:
     overlap_size: 64
     retrieval_mode: "vector"
 
+  - model_name: "sentence-transformers/all-mpnet-base-v2"
+    embedding_dim: 768
+    chunk_size: 512
+    overlap_size: 64
+    retrieval_mode: "vector"
+
   # --- Pure BM25 ---
   - model_name: "bm25-baseline"
     embedding_dim: 0
@@ -36,6 +42,21 @@ configs:
   # --- Hybrid: MiniLM + BM25 ---
   - model_name: "sentence-transformers/all-MiniLM-L6-v2"
     embedding_dim: 384
+    chunk_size: 512
+    overlap_size: 64
+    retrieval_mode: "hybrid"
+    bm25_config:
+      <<: *bm25_defaults
+    hybrid_config:
+      rrf_k: 60
+      vector_weight: 0.5
+      bm25_weight: 0.5
+      vector_top_k: 30
+      bm25_top_k: 30
+
+  # --- Hybrid: mpnet + BM25 ---
+  - model_name: "sentence-transformers/all-mpnet-base-v2"
+    embedding_dim: 768
     chunk_size: 512
     overlap_size: 64
     retrieval_mode: "hybrid"
