@@ -290,6 +290,9 @@ jobs:
           cp ${{ env.CONFIG_PATH }} "$ARTIFACT_DIR/retrieval_model_configs.yaml"
           cp eval_results.json "$ARTIFACT_DIR/eval_results.json"
           
+          # Dummy model file required by sklearn container
+          python3 -c "import pickle; pickle.dump({'type': 'retrieval-config-tracker'}, open('$ARTIFACT_DIR/model.pkl', 'wb'))"
+          
           cat > "$ARTIFACT_DIR/deployment_manifest.json" <<MANIFEST
           {
             "best_config": "${BEST_CONFIG}",
@@ -306,7 +309,6 @@ jobs:
           
           echo "gcs_path=$GCS_PATH" >> $GITHUB_OUTPUT
           echo "📤 Artifacts uploaded to: $GCS_PATH"
-
       # ── Register in Vertex AI Model Registry ──
       - name: Register in Vertex AI Model Registry
         env:
@@ -344,6 +346,9 @@ jobs:
           upload_kwargs = dict(
               display_name=MODEL_DISPLAY_NAME,
               artifact_uri=gcs_path,
+              serving_container_image_uri=(
+                  "us-docker.pkg.dev/vertex-ai/prediction/sklearn-cpu.1-3:latest"
+              ),
               description=(
                   f"InterviewPrep retrieval model | "
                   f"Config: {best_config} | "
