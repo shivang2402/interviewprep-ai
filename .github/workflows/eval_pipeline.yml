@@ -315,35 +315,32 @@ jobs:
           GCS_PATH: ${{ steps.upload_gcs.outputs.gcs_path }}
         run: |
           python - <<'PYEOF'
-          import json
+          import json, re
           from google.cloud import aiplatform
-
+          
           aiplatform.init(
               project="${{ env.GCP_PROJECT_ID }}",
               location="${{ env.GCP_REGION }}",
           )
-
+          
           best_config = "${{ needs.evaluate.outputs.best_config_name }}"
           best_score  = "${{ needs.evaluate.outputs.best_selection_score }}"
           gcs_path    = "${{ steps.upload_gcs.outputs.gcs_path }}"
-
-          # Load full metrics for the description
+          
           with open("eval_results.json") as f:
               results = json.load(f)
           best_metrics = results.get("best_metrics", {})
-
+          
           MODEL_DISPLAY_NAME = "interviewprep-retrieval-model"
-
-          # Check if model already exists → add version; else create new
+          
           existing = aiplatform.Model.list(
               filter=f'display_name="{MODEL_DISPLAY_NAME}"',
               order_by="create_time desc",
           )
-
-          # Clean label values (lowercase, no special chars, max 63 chars)
-          safe_config = best_config[:63].lower().replace("/", "-").replace("_", "-")
-          safe_score = str(best_score).replace(".", "-")
-
+          
+          def clean_label(val):
+              return re.sub(r'[^a-z0-9_-]', '-', str(val).lower())[:63]
+          
           upload_kwargs = dict(
               display_name=MODEL_DISPLAY_NAME,
               artifact_uri=gcs_path,
@@ -358,10 +355,10 @@ jobs:
                   f"Recall@10: {best_metrics.get('recall_at_10', 'N/A')}"
               ),
               labels={
-                  "best-config": safe_config,
-                  "selection-score": safe_score,
+                  "best-config": clean_label(best_config),
+                  "selection-score": clean_label(best_score),
                   "pipeline": "cicd-retrieval-eval",
-                  "git-sha": "${{ github.sha }}"[:63],
+                  "git-sha": clean_label("${{ github.sha }}"),
               },
               version_aliases=["latest", "production"],
               version_description=(
@@ -369,16 +366,16 @@ jobs:
                   f"Config: {best_config} | Score: {best_score}"
               ),
           )
-
+          
           if existing:
               upload_kwargs["parent_model"] = existing[0].resource_name
               upload_kwargs["is_default_version"] = True
               print(f"Adding new version to existing model: {existing[0].resource_name}")
           else:
               print("Creating new model in registry")
-
+          
           model = aiplatform.Model.upload(**upload_kwargs)
-
+          
           print(f"✅ Registered: {model.resource_name}")
           print(f"   Version: {model.version_id}")
           print(f"   Aliases: production, latest")
