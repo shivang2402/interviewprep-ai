@@ -120,7 +120,8 @@ jobs:
 
           # Add src to path so evaluation module is importable
           sys.path.insert(0, os.path.join(os.getcwd(), "src"))
-          from src.evaluation.evaluator import (
+          
+          from evaluation.evaluator import (
               load_eval_config, PipelineOrchestrator
           )
 
