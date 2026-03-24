@@ -35,7 +35,14 @@ def _mock_gcs():
 
 
 def _make_csv_text(rows):
-    df = pd.DataFrame(rows)
+    if not rows:
+        columns = [
+            "query_id", "query_text", "chunk_id", "document_id",
+            "query_category", "relevance", "relevance_reason"
+        ]
+        df = pd.DataFrame(columns=columns)
+    else:
+        df = pd.DataFrame(rows)
     buf = io.StringIO()
     df.to_csv(buf, index=False)
     return buf.getvalue()
