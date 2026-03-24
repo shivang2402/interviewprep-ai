@@ -9,3 +9,10 @@ datasketch
 spacy
 psycopg2-binary
 pytest
+sentence-transformers
+numpy
+pandas
+pgvector
+rank-bm25
+openai
+mlflow

@@ -1,0 +1,35 @@
+# ---------------------------------------------------------------------------
+# Chunking Configuration
+# ---------------------------------------------------------------------------
+
+chunking:
+  chunk_size_words: 500
+  overlap_words: 50
+  min_doc_words: 150
+
+# ---------------------------------------------------------------------------
+# Round Boundary Patterns
+#
+# Each entry is a regex fragment. They are joined with "|" and compiled
+# into a single pattern anchored by a leading newline/start-of-string.
+# ---------------------------------------------------------------------------
+
+round_boundary_patterns:
+  - '(?:round|interview\s*round)[\s\-]*(?:\d+(?:\s*(?:&|and)\s*\d+)?|[IVXL]+)\s*(?:[:\-\(]|\([^)]*\)\s*:)?'
+  - '(?:zero|first|second|third|fourth|fifth|sixth|seventh)\s*round\s*[:\-\(]?'
+  - '(?:hr|human\s*resource)\s*(?:round|interview)\s*[:\-\(]?'
+  - 'phone\s*(?:screen|interview)\s*[:\-\(]?'
+  - 'online\s*(?:assessment|test)\s*[:\-\(]?'
+  - '(?:oa|written\s*test|aptitude\s*test)\s*[:\-\(]'
+  - 'technical\s*(?:round|interview)\s*\d*\s*[:\-\(]?'
+  - 'coding\s*(?:round|interview)\s*\d*\s*[:\-\(]?'
+  - 'system\s*design\s*(?:round|interview)?\s*[:\-\(]?'
+  - 'machine\s*coding\s*(?:round)?\s*[:\-\(]?'
+  - 'behavioral\s*(?:round|interview)\s*[:\-\(]?'
+  - 'managerial\s*(?:round|interview)\s*[:\-\(]?'
+  - 'final\s*(?:round|interview)\s*[:\-\(]?'
+  - 'onsite\s*(?:round|interview)?\s*[:\-\(]?'
+  - 'group\s*discussion\s*[:\-\(]?'
+  - 'superday\s*(?:round|rounds)?\s*[:\-\(]?'
+  - 'f2f\s*\d+\s*[:\-]?'
+  - 'f\s*2\s*f\s*\d+\s*[:\-]?'
