@@ -17,12 +17,12 @@ bm25_defaults: &bm25_defaults
   chunk_id_column: "chunk_id"
 
 configs:
-#  # --- Pure Vector ---
-#  - model_name: "sentence-transformers/all-MiniLM-L6-v2"
-#    embedding_dim: 384
-#    chunk_size: 512
-#    overlap_size: 64
-#    retrieval_mode: "vector"
+  # --- Pure Vector ---
+  - model_name: "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_dim: 384
+    chunk_size: 512
+    overlap_size: 64
+    retrieval_mode: "vector"
 
   # --- Pure BM25 ---
   - model_name: "bm25-baseline"
