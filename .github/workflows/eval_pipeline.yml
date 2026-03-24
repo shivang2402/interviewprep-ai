@@ -252,7 +252,7 @@ jobs:
     needs: evaluate
     if: >
       needs.evaluate.outputs.is_improvement == 'true'
-      && github.ref == 'refs/heads/dev'
+      && (github.ref == 'refs/heads/dev' || github.event_name == 'pull_request')
     runs-on: ubuntu-latest
 
     steps:
