@@ -17,11 +17,11 @@ name: Retrieval Eval & Deploy Pipeline
 
 on:
   push:
-    branches: [main]
+    branches: [dev]
     paths:
       - "src/evaluation/retrieval_model_configs.yaml"
   pull_request:
-    branches: [main]
+    branches: [dev]
     paths:
       - "src/evaluation/retrieval_model_configs.yaml"
 
