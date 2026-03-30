@@ -21,12 +21,24 @@ class HybridRetriever:
 
     def _vector_search(self, query_embedding, top_k: int) -> list[tuple]:
         col = self.embedding_column
+        # query = f"""
+        #     SELECT chunk_id, chunk_text, source_url, company, role,
+        #            1 - ({col} <=> %s::vector) AS similarity
+        #     FROM document_chunks
+        #     WHERE {col} IS NOT NULL
+        #     ORDER BY {col} <=> %s::vector
+        #     LIMIT %s;
+        # """
         query = f"""
-            SELECT chunk_id, chunk_text, source_url, company, role,
-                   1 - ({col} <=> %s::vector) AS similarity
-            FROM document_chunks
-            WHERE {col} IS NOT NULL
-            ORDER BY {col} <=> %s::vector
+            SELECT dc.chunk_id, dc.chunk_text, pd.source_url, c.name  AS company, r.title AS role,
+                1 - (dc.{col} <=> %s::vector) AS similarity
+            FROM document_chunks dc
+            JOIN processed_documents pd ON pd.document_id = dc.document_id
+            JOIN interview_metadata im  ON im.document_id = dc.document_id
+            JOIN companies c            ON c.company_id   = im.company_id
+            JOIN roles r                ON r.role_id      = im.role_id
+            WHERE dc.{col} IS NOT NULL
+            ORDER BY dc.{col} <=> %s::vector
             LIMIT %s;
         """
         emb_list = query_embedding.tolist()
@@ -35,13 +47,28 @@ class HybridRetriever:
             return cur.fetchall()
 
     def _bm25_search(self, query_text: str, top_k: int) -> list[tuple]:
-        query = """
-            SELECT chunk_id, chunk_text, source_url, company, role,
-                   ts_rank_cd(chunk_tsvector, plainto_tsquery('english', %s)) AS rank
-            FROM document_chunks
-            WHERE chunk_tsvector @@ plainto_tsquery('english', %s)
-            ORDER BY rank DESC
-            LIMIT %s;
+        # query = """
+        #     SELECT chunk_id, chunk_text, source_url, company, role,
+        #            ts_rank_cd(chunk_tsvector, plainto_tsquery('english', %s)) AS rank
+        #     FROM document_chunks
+        #     WHERE chunk_tsvector @@ plainto_tsquery('english', %s)
+        #     ORDER BY rank DESC
+        #     LIMIT %s;
+        # """
+        query = f"""
+          SELECT dc.chunk_id, dc.chunk_text, pd.source_url, c.name  AS company, r.title AS role,
+            ts_rank_cd(
+                to_tsvector('english', dc.chunk_text),
+                plainto_tsquery('english', %s)
+            ) AS rank
+        FROM document_chunks dc
+        JOIN processed_documents pd  ON pd.document_id = dc.document_id
+        JOIN interview_metadata im   ON im.document_id = dc.document_id
+        JOIN companies c             ON c.company_id   = im.company_id
+        JOIN roles r                 ON r.role_id      = im.role_id
+        WHERE to_tsvector('english', dc.chunk_text) @@ plainto_tsquery('english', %s)
+        ORDER BY rank DESC
+        LIMIT %s;
         """
         with self.conn.cursor() as cur:
             cur.execute(query, (query_text, query_text, top_k))

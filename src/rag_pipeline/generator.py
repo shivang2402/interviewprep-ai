@@ -2,8 +2,16 @@
 RAG Generator — orchestrates retrieval + OpenAI generation.
 """
 
+# from openai import OpenAI
+# from src.rag_pipeline.prompt import build_messages
+import os
+from pathlib import Path
+from dotenv import load_dotenv
 from openai import OpenAI
 from src.rag_pipeline.prompt import build_messages
+
+_env_path = Path(__file__).resolve().parents[2] / ".env"
+load_dotenv(dotenv_path=_env_path)
 
 
 class RAGGenerator:
