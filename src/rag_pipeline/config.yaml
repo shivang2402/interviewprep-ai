@@ -1,0 +1,40 @@
+# ==============================================================
+# InterviewPrep AI - Generation Pipeline Configuration
+# ==============================================================
+
+gcp:
+  project_id: "professorbot-dovbsg"
+  region: "us-central1"
+  model_registry_name: "interviewprep-retrieval-model"
+
+database:
+  user: "postgres"
+  host: "34.148.0.165"
+  port: 5432
+  dbname: "interviewprep-ai-database"
+  password: "admin"
+
+mlflow:
+  tracking_uri: "http://136.109.222.133:5000/"   # your GCE MLflow server
+  experiment_name: "interviewprep-retrieval-eval"
+
+retrieval:
+  top_k: 8
+  fetch_multiplier: 2       # over-fetch factor for RRF fusion
+  rrf_k: 60
+  bm25_weight: 0.0
+  vector_weight: 1.0
+
+# Mapping: model name → (dimension, db column)
+embedding_models:
+  "all-MiniLM-L6-v2":
+    dim: 384
+    column: "embeddings_all_minilm_l6_v2"
+  "all-mpnet-base-v2":
+    dim: 768
+    column: "embeddings_all_mpnet_base_v2"
+
+generation:
+  openai_model: "gpt-4.1-mini"
+  temperature: 0.3
+  max_tokens: 1024
