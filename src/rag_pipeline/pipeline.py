@@ -55,7 +55,7 @@ if __name__ == "__main__":
     generator = build_generator()
 
     try:
-        query = "How should I prepare for a SDE-3 at Google?"
+        query = "I need help to prepare with SRE interview at Nutanix?"
         result = generator.generate(query)
 
         print(result)
