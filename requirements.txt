@@ -16,3 +16,4 @@ pgvector
 rank-bm25
 openai
 mlflow
+evidently
