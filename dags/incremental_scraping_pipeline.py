@@ -2,7 +2,7 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 from airflow.operators.email import EmailOperator
-from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+
 from airflow.models import Variable
 from airflow.exceptions import AirflowFailException
 from datetime import datetime, timedelta
@@ -498,13 +498,6 @@ db_load = PythonOperator(
     dag=dag,
 )
 
-trigger_chunking_embedding = TriggerDagRunOperator(
-    task_id='trigger_chunking_embedding',
-    trigger_dag_id='chunking_embedding_pipeline',
-    wait_for_completion=True,
-    dag=dag,
-)
-
 complete = BashOperator(
     task_id='complete',
     bash_command='echo "Incremental pipeline completed at $(date)"',
@@ -528,4 +521,4 @@ send_email = EmailOperator(
     dag=dag,
 )
 
-start >> [scrape_gfg, scrape_leetcode_task, scrape_medium_task] >> summary >> preprocess >> validate >> db_load >> trigger_chunking_embedding >> complete >> build_email >> send_email
+start >> [scrape_gfg, scrape_leetcode_task, scrape_medium_task] >> summary >> preprocess >> validate >> db_load >> complete >> build_email >> send_email
