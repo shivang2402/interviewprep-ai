@@ -498,6 +498,122 @@ jobs:
               print(f"Slack notification failed: {resp.status_code} {resp.text}")
           PYEOF
 
+      - name: Send email notification
+        if: always()
+        env:
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER || '_unset_' }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME || '_unset_' }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD || '_unset_' }}
+          BEFORE_SCORE: ${{ needs.snapshot-before-score.outputs.before_score }}
+          AFTER_SCORE: ${{ needs.regression-gate.outputs.after_score }}
+          SCORE_DELTA: ${{ needs.regression-gate.outputs.score_delta }}
+          GATE_PASSED: ${{ needs.regression-gate.outputs.gate_passed }}
+          DAG_STATUS: ${{ needs.run-corpus-pipeline.outputs.dag_status }}
+        run: |
+          python - <<'PYEOF'
+          import os, smtplib
+          from email.mime.multipart import MIMEMultipart
+          from email.mime.text import MIMEText
+
+          smtp_server = os.environ.get("SMTP_SERVER")
+          if not smtp_server:
+              print("SMTP_SERVER not set — skipping email notification")
+              exit(0)
+
+          smtp_port   = int(os.environ.get("SMTP_PORT", "587"))
+          smtp_user   = os.environ.get("SMTP_USERNAME", "")
+          smtp_pass   = os.environ.get("SMTP_PASSWORD", "")
+
+          dag_status   = os.environ.get("DAG_STATUS",  "unknown")
+          gate_passed  = os.environ.get("GATE_PASSED", "false") == "true"
+          before_score = os.environ.get("BEFORE_SCORE", "N/A")
+          after_score  = os.environ.get("AFTER_SCORE",  "N/A")
+          score_delta  = os.environ.get("SCORE_DELTA",  "N/A")
+          trigger_reason = "${{ github.event.inputs.trigger_reason }}"
+          trigger_source = "${{ github.event.inputs.trigger_source }}"
+          run_url = (
+              "${{ github.server_url }}/${{ github.repository }}"
+              "/actions/runs/${{ github.run_id }}"
+          )
+
+          RECIPIENTS = [
+              "kansara.dh@northeastern.edu",
+              "lnu.prat@northeastern.edu",
+              "patel.shivangm@northeastern.edu",
+              "kanani.h@northeastern.edu",
+              "shah.shreyc@northeastern.edu",
+              "parikh.malh@northeastern.edu",
+          ]
+
+          if dag_status != "success":
+              status_label = "FAILED"
+              status_color = "#FF0000"
+              detail = (
+                  f"The Airflow <code>interview_scraping_pipeline</code> DAG did not "
+                  f"complete successfully (state: <b>{dag_status}</b>). "
+                  f"Corpus was <b>not</b> updated."
+              )
+          elif gate_passed:
+              status_label = "REFRESHED"
+              status_color = "#36A64F"
+              detail = (
+                  f"Corpus refreshed and regression gate passed. "
+                  f"Score delta: <b>{score_delta}</b>"
+              )
+          else:
+              status_label = "ABORTED — REGRESSION DETECTED"
+              status_color = "#FF6600"
+              detail = (
+                  f"Regression gate <b>failed</b> — new corpus degraded retrieval quality. "
+                  f"Score delta: <b>{score_delta}</b>. "
+                  f"Run tagged <code>aborted_regression</code> in MLflow. "
+                  f"Manual investigation required."
+              )
+
+          subject = f"[InterviewPrep] Corpus Refresh — {status_label}"
+
+          html = f"""
+          <html><body style="font-family:Arial,sans-serif;font-size:14px;">
+            <h2 style="color:{status_color};">Corpus Refresh — {status_label}</h2>
+            <table border="1" cellpadding="6" cellspacing="0"
+                   style="border-collapse:collapse;min-width:400px;">
+              <tr style="background:#f2f2f2;">
+                <th align="left">Field</th>
+                <th align="left">Value</th>
+              </tr>
+              <tr><td>Trigger reason</td><td>{trigger_reason}</td></tr>
+              <tr><td>Trigger source</td><td>{trigger_source}</td></tr>
+              <tr><td>Airflow DAG state</td><td>{dag_status}</td></tr>
+              <tr><td>Before score</td><td>{before_score}</td></tr>
+              <tr><td>After score</td><td>{after_score}</td></tr>
+              <tr><td>Score delta</td><td>{score_delta}</td></tr>
+              <tr><td>Regression gate</td>
+                  <td>{'PASSED' if gate_passed else 'FAILED'}</td></tr>
+            </table>
+            <p>{detail}</p>
+            <p><a href="{run_url}">View GitHub Actions run</a></p>
+            <p style="color:#888;">— InterviewPrep MLOps</p>
+          </body></html>
+          """
+
+          msg = MIMEMultipart("alternative")
+          msg["Subject"] = subject
+          msg["From"]    = smtp_user
+          msg["To"]      = ", ".join(RECIPIENTS)
+          msg.attach(MIMEText(html, "html"))
+
+          try:
+              with smtplib.SMTP(smtp_server, smtp_port) as server:
+                  server.ehlo()
+                  server.starttls()
+                  server.login(smtp_user, smtp_pass)
+                  server.sendmail(smtp_user, RECIPIENTS, msg.as_string())
+              print(f"Email sent to {len(RECIPIENTS)} recipients — {subject}")
+          except Exception as exc:
+              print(f"Email notification failed: {exc}")
+          PYEOF
+
       - name: Post GitHub Actions summary
         if: always()
         run: |
