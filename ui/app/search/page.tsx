@@ -11,6 +11,7 @@ import type {
   SearchResult,
   SemanticSearchResult,
   FilterOptions,
+  ParsedAs,
 } from "@/lib/types";
 import SearchBar from "@/components/search/SearchBar";
 import {
@@ -31,6 +32,7 @@ function SearchContent() {
   >([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [parsedAs, setParsedAs] = useState<ParsedAs | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [options, setOptions] = useState<FilterOptions | null>(null);
@@ -63,6 +65,7 @@ function SearchContent() {
         });
         setFulltextResults(res.data);
         setTotal(res.meta.total);
+        setParsedAs(res.parsed_as);
       } else {
         const res = await semanticSearch({
           q: query,
@@ -73,6 +76,7 @@ function SearchContent() {
         });
         setSemanticResults(res.data);
         setTotal(res.meta.total);
+        setParsedAs(res.parsed_as);
       }
     } catch {
       setError("Search failed. Please try again.");
@@ -172,7 +176,7 @@ function SearchContent() {
         <>
           {mode === "fulltext" ? (
             <>
-              <FulltextResults results={fulltextResults} />
+              <FulltextResults results={fulltextResults} parsedAs={parsedAs} />
               <Pagination
                 page={page}
                 total={total}
@@ -181,7 +185,7 @@ function SearchContent() {
               />
             </>
           ) : (
-            <SemanticResults results={semanticResults} />
+            <SemanticResults results={semanticResults} parsedAs={parsedAs} />
           )}
         </>
       )}

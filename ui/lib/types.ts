@@ -4,9 +4,17 @@ export interface PaginationMeta {
   limit: number;
 }
 
+export interface ParsedAs {
+  company?: string;
+  role?: string;
+  level?: string;
+  query: string;
+}
+
 export interface PaginatedResponse<T> {
   data: T[];
   meta: PaginationMeta;
+  parsed_as?: ParsedAs;
 }
 
 export interface SingleResponse<T> {

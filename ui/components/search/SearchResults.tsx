@@ -1,17 +1,52 @@
 import Link from "next/link";
-import type { SearchResult, SemanticSearchResult } from "@/lib/types";
+import type { SearchResult, SemanticSearchResult, ParsedAs } from "@/lib/types";
 
 function stripMarkdown(text: string): string {
   return text.replace(/\*\*(.*?)\*\*/g, "$1").replace(/\*(.*?)\*/g, "$1");
 }
 
-export function FulltextResults({ results }: { results: SearchResult[] }) {
+function ParsedAsBanner({ parsed }: { parsed?: ParsedAs }) {
+  if (!parsed) return null;
+  const parts: string[] = [];
+  if (parsed.company) parts.push(parsed.company);
+  if (parsed.role) parts.push(parsed.role);
+  if (parsed.level) parts.push(`${parsed.level} level`);
+  if (parts.length === 0) return null;
+
+  return (
+    <p className="mt-4 text-xs text-neutral-500">
+      Showing results for:{" "}
+      <span className="text-neutral-700 font-medium">
+        {parts.join(" \u00B7 ")}
+      </span>
+      {parsed.query !== parts.join(" ") && parsed.query && (
+        <span>
+          {" \u00B7 "}&quot;{parsed.query}&quot;
+        </span>
+      )}
+    </p>
+  );
+}
+
+export function FulltextResults({
+  results,
+  parsedAs,
+}: {
+  results: SearchResult[];
+  parsedAs?: ParsedAs;
+}) {
   if (results.length === 0) {
-    return <p className="text-sm text-neutral-500 mt-6">No results found.</p>;
+    return (
+      <>
+        <ParsedAsBanner parsed={parsedAs} />
+        <p className="text-sm text-neutral-500 mt-6">No results found.</p>
+      </>
+    );
   }
 
   return (
     <div className="mt-6 space-y-4">
+      <ParsedAsBanner parsed={parsedAs} />
       {results.map((r) => (
         <Link
           key={r.document_id}
@@ -41,15 +76,23 @@ export function FulltextResults({ results }: { results: SearchResult[] }) {
 
 export function SemanticResults({
   results,
+  parsedAs,
 }: {
   results: SemanticSearchResult[];
+  parsedAs?: ParsedAs;
 }) {
   if (results.length === 0) {
-    return <p className="text-sm text-neutral-500 mt-6">No results found.</p>;
+    return (
+      <>
+        <ParsedAsBanner parsed={parsedAs} />
+        <p className="text-sm text-neutral-500 mt-6">No results found.</p>
+      </>
+    );
   }
 
   return (
     <div className="mt-6 space-y-4">
+      <ParsedAsBanner parsed={parsedAs} />
       {results.map((r) => (
         <Link
           key={r.chunk_id}
