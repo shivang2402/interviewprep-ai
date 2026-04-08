@@ -1,0 +1,45 @@
+# ==============================================================
+# InterviewPrep AI — Retraining Trigger Thresholds
+# ==============================================================
+# Defines the thresholds that trigger a corpus refresh:
+#   re-scraping → re-chunking → re-embedding → re-indexing
+#
+# Two independent weekly triggers (both checked every Monday):
+#   1. Performance threshold — golden-dataset eval score degradation
+#      Checked by: weekly_performance_check.yml → performance_monitor.py
+#   2. Drift threshold       — Evidently embedding feature drift
+#      Checked by: drift_detection.yml → drift_detection.py (composite)
+#               AND weekly_performance_check.yml → performance_monitor.py (standalone)
+#
+# Stored alongside retrieval_model_configs.yaml so both the eval
+# config and the retraining thresholds are version-controlled and
+# audited together on every config change.
+# ==============================================================
+
+retraining_triggers:
+
+  # ── Trigger 1: Performance Degradation ────────────────────────────────────
+  # The weekly scheduled evaluation runs the golden dataset against the
+  # currently deployed retrieval config and records the composite
+  # selection_score (weighted: NDCG@10, Recall@10, MRR@5, efficiency).
+  #
+  # If the current week's score drops MORE THAN this fraction below the
+  # deployment-baseline score logged in MLflow → trigger corpus refresh.
+  #
+  # Example: baseline=0.72, threshold=0.03 → trigger if score < 0.6984
+  performance_degradation_pct: 0.03    # 3% drop from deployment baseline
+
+  # ── Trigger 2: Embedding Drift (Evidently) ────────────────────────────────
+  # The weekly Evidently DataDriftReport treats each dimension of the
+  # query embedding (384-dim, all-MiniLM-L6-v2) as a separate feature
+  # and applies a Kolmogorov-Smirnov test against the reference distribution.
+  #
+  # If MORE THAN this fraction of embedding dimensions are flagged as
+  # drifted → trigger corpus refresh.
+  #
+  # Used in two places:
+  #   - drift_detection.py: as one component of the composite drift check
+  #     (requires any two of three metrics to breach)
+  #   - performance_monitor.py: as a standalone trigger — if Evidently alone
+  #     flags > this threshold, corpus refresh fires immediately
+  evidently_drift_pct: 0.30            # 30% of embedding features drifted

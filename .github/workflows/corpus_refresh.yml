@@ -1,0 +1,527 @@
+# .github/workflows/corpus_refresh.yml
+#
+# Corpus Refresh Pipeline — Full Automation
+# ──────────────────────────────────────────
+# Triggered by monitoring threshold breaches (workflow_dispatch):
+#   - drift_detection.py      → Evidently composite drift (any 2 of 3 metrics)
+#   - performance_monitor.py  → Standalone Evidently drift > 30%
+#   - manual                  → GitHub UI / ad-hoc
+#
+# Pipeline steps (4 jobs):
+#   1. snapshot-before-score  → Capture deployed baseline selection_score from MLflow
+#   2. run-corpus-pipeline    → Trigger Airflow interview_scraping_pipeline DAG,
+#                               poll until complete (incremental: picks up last scrape date,
+#                               chains into chunking_embedding_pipeline automatically)
+#   3. regression-gate        → Run PipelineOrchestrator against refreshed corpus;
+#                               pass if score holds or improves, abort on regression
+#   4. log-and-notify         → Tag MLflow run as run_type=corpus_refresh with
+#                               before/after scores; send Slack webhook with outcome
+
+name: Corpus Refresh
+
+on:
+  workflow_dispatch:
+    inputs:
+      trigger_reason:
+        description: "Human-readable reason for this corpus refresh"
+        required: true
+        default: "manual"
+      trigger_source:
+        description: "Which monitor fired: drift_detection | performance_monitor | manual"
+        required: false
+        default: "manual"
+      # ── Drift-trigger context (set by drift_detection.py) ──
+      centroid_distance:
+        description: "Centroid cosine distance (drift trigger)"
+        required: false
+        default: ""
+      evidently_drift_pct:
+        description: "Evidently drift fraction (drift trigger)"
+        required: false
+        default: ""
+      p95_dim_shift:
+        description: "P95 per-dim shift (drift trigger)"
+        required: false
+        default: ""
+      # ── Performance-trigger context (set by performance_monitor.py) ──
+      score_drop_pct:
+        description: "Fractional score drop from baseline (performance trigger)"
+        required: false
+        default: ""
+
+env:
+  MLFLOW_TRACKING_URI: "http://${{ secrets.MLFLOW_HOST }}:5000"
+  GCP_PROJECT_ID: professorbot-dovbsg
+  GCP_REGION: us-central1
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────
+  # Job 1: Snapshot the currently deployed baseline score from MLflow
+  # ────────────────────────────────────────────────────────────────────────
+  snapshot-before-score:
+    name: Capture Pre-Refresh Baseline Score
+    runs-on: ubuntu-latest
+    outputs:
+      before_score: ${{ steps.get_score.outputs.before_score }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install MLflow
+        run: pip install mlflow
+
+      - name: Get deployed baseline selection_score from MLflow
+        id: get_score
+        env:
+          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+        run: |
+          python - <<'PYEOF'
+          import mlflow, os
+
+          mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+          experiment = mlflow.get_experiment_by_name("interviewprep-retrieval-eval")
+
+          before_score = 0.0
+          if experiment:
+              runs = mlflow.search_runs(
+                  experiment_ids=[experiment.experiment_id],
+                  filter_string=(
+                      "tags.run_type = 'pipeline_parent' "
+                      "AND tags.deployment_status = 'deployed'"
+                  ),
+                  order_by=["start_time DESC"],
+                  max_results=1,
+              )
+              if not runs.empty:
+                  before_score = float(runs.iloc[0].get("metrics.best_selection_score", 0.0))
+                  print(f"Deployed baseline: {before_score:.4f}")
+              else:
+                  print("No deployed run found — before_score defaults to 0.0")
+          else:
+              print("MLflow experiment not found — before_score defaults to 0.0")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"before_score={before_score}\n")
+          PYEOF
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Job 2: Trigger Airflow pipeline and poll until completion
+  # ────────────────────────────────────────────────────────────────────────
+  run-corpus-pipeline:
+    name: Run Airflow Scraping + Chunking + Embedding Pipeline
+    needs: snapshot-before-score
+    runs-on: ubuntu-latest
+    outputs:
+      dag_status: ${{ steps.poll.outputs.dag_status }}
+      dag_run_id: ${{ steps.trigger.outputs.dag_run_id }}
+
+    steps:
+      - name: Log trigger context
+        run: |
+          echo "================================================"
+          echo "  Corpus Refresh Pipeline"
+          echo "================================================"
+          echo "  Reason : ${{ github.event.inputs.trigger_reason }}"
+          echo "  Source : ${{ github.event.inputs.trigger_source }}"
+          if [ -n "${{ github.event.inputs.evidently_drift_pct }}" ]; then
+            echo "  Evidently drift : ${{ github.event.inputs.evidently_drift_pct }}"
+            echo "  Centroid dist   : ${{ github.event.inputs.centroid_distance }}"
+            echo "  P95 dim shift   : ${{ github.event.inputs.p95_dim_shift }}"
+          fi
+          if [ -n "${{ github.event.inputs.score_drop_pct }}" ]; then
+            echo "  Score drop      : ${{ github.event.inputs.score_drop_pct }}"
+          fi
+          echo "================================================"
+
+      - name: Trigger Airflow interview_scraping_pipeline DAG
+        id: trigger
+        env:
+          AIRFLOW_API_URL: ${{ secrets.AIRFLOW_API_URL }}
+          AIRFLOW_API_TOKEN: ${{ secrets.AIRFLOW_API_TOKEN }}
+        run: |
+          # The interview_scraping_pipeline DAG has schedule=None.
+          # It reads last_scrape_date from Airflow Variables → fetches only
+          # new documents (incremental). It then chains into
+          # chunking_embedding_pipeline via TriggerDagRunOperator, which
+          # re-chunks and re-embeds new documents and upserts into pgvector
+          # + updates the BM25 tsvector index.
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          RESPONSE=$(curl --silent --show-error --fail \
+            --request POST \
+            --url "${AIRFLOW_API_URL}/api/v1/dags/interview_scraping_pipeline/dagRuns" \
+            --header "Authorization: Bearer ${AIRFLOW_API_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data "{
+              \"conf\": {
+                \"trigger_reason\": \"${{ github.event.inputs.trigger_reason }}\",
+                \"trigger_source\": \"${{ github.event.inputs.trigger_source }}\",
+                \"triggered_at\": \"${TIMESTAMP}\",
+                \"demo_mode\": \"false\"
+              }
+            }")
+
+          echo "Airflow response: $RESPONSE"
+
+          DAG_RUN_ID=$(echo "$RESPONSE" | \
+            python3 -c "import sys, json; print(json.load(sys.stdin)['dag_run_id'])")
+          echo "dag_run_id=${DAG_RUN_ID}" >> $GITHUB_OUTPUT
+          echo "Triggered DAG run: ${DAG_RUN_ID}"
+
+      - name: Poll Airflow until DAG completes (max 6 hours)
+        id: poll
+        env:
+          AIRFLOW_API_URL: ${{ secrets.AIRFLOW_API_URL }}
+          AIRFLOW_API_TOKEN: ${{ secrets.AIRFLOW_API_TOKEN }}
+        run: |
+          # The scraping + chunking + embedding pipeline can take several hours.
+          # The scraping DAG automatically triggers chunking_embedding_pipeline
+          # (TriggerDagRunOperator, wait_for_completion=True) so we only need
+          # to poll the parent DAG's state.
+          DAG_RUN_ID="${{ steps.trigger.outputs.dag_run_id }}"
+          MAX_WAIT=21600   # 6 hours
+          ELAPSED=0
+          POLL_INTERVAL=60 # check every 60 seconds
+
+          echo "Polling DAG run ${DAG_RUN_ID} (timeout: ${MAX_WAIT}s) ..."
+
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            STATE=$(curl --silent \
+              --url "${AIRFLOW_API_URL}/api/v1/dags/interview_scraping_pipeline/dagRuns/${DAG_RUN_ID}" \
+              --header "Authorization: Bearer ${AIRFLOW_API_TOKEN}" | \
+              python3 -c "import sys, json; d=json.load(sys.stdin); print(d.get('state','unknown'))")
+
+            echo "[${ELAPSED}s elapsed] DAG state: ${STATE}"
+
+            if [ "${STATE}" = "success" ]; then
+              echo "dag_status=success" >> $GITHUB_OUTPUT
+              echo "DAG completed successfully"
+              exit 0
+            elif [ "${STATE}" = "failed" ]; then
+              echo "dag_status=failed" >> $GITHUB_OUTPUT
+              echo "DAG failed — corpus refresh will be aborted"
+              exit 1
+            fi
+
+            sleep $POLL_INTERVAL
+            ELAPSED=$((ELAPSED + POLL_INTERVAL))
+          done
+
+          echo "dag_status=timeout" >> $GITHUB_OUTPUT
+          echo "DAG polling timed out after ${MAX_WAIT}s"
+          exit 1
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Job 3: Regression gate — evaluate refreshed corpus
+  # ────────────────────────────────────────────────────────────────────────
+  regression-gate:
+    name: Regression Gate — Evaluate Refreshed Corpus
+    needs: [snapshot-before-score, run-corpus-pipeline]
+    runs-on: ubuntu-latest
+    outputs:
+      after_score: ${{ steps.eval.outputs.after_score }}
+      score_delta: ${{ steps.eval.outputs.score_delta }}
+      gate_passed: ${{ steps.eval.outputs.gate_passed }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Run PipelineOrchestrator against refreshed corpus
+        id: eval
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+          BEFORE_SCORE: ${{ needs.snapshot-before-score.outputs.before_score }}
+        run: |
+          python - <<'PYEOF'
+          import os, json, sys
+          from datetime import datetime
+
+          sys.path.insert(0, os.getcwd())
+          from src.evaluation.evaluator import load_eval_config, PipelineOrchestrator
+
+          db_config = {
+              "host":     os.environ["DB_HOST"],
+              "dbname":   os.environ["DB_NAME"],
+              "user":     os.environ["DB_USER"],
+              "password": os.environ["DB_PASSWORD"],
+              "port":     int(os.environ.get("DB_PORT", 5432)),
+              "sslmode":  "require",
+          }
+
+          cfg = load_eval_config()
+          mlflow_uri = os.environ.get("MLFLOW_TRACKING_URI")
+          timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+
+          orchestrator = PipelineOrchestrator(
+              db_config=db_config,
+              mlflow_tracking_uri=mlflow_uri,
+          )
+
+          # Run all configs so the full comparison is available for auditing
+          all_metrics = orchestrator.run(
+              configs=cfg["configs"],
+              relevance_threshold=cfg["relevance_threshold"],
+              max_k=cfg["max_k"],
+              run_label=f"corpus_refresh_{timestamp}",
+          )
+
+          if not all_metrics:
+              print("ERROR: evaluation returned no results")
+              sys.exit(1)
+
+          best_name = max(all_metrics, key=lambda n: all_metrics[n].get("selection_score", 0))
+          after_score = all_metrics[best_name]["selection_score"]
+          before_score = float(os.environ.get("BEFORE_SCORE", "0") or "0")
+          score_delta = after_score - before_score
+
+          # Regression gate: pass if score holds or improves.
+          # A tolerance of -0.005 allows for minor golden-dataset variance
+          # without triggering a false abort.
+          gate_passed = score_delta >= -0.005
+
+          print(f"\n{'='*50}")
+          print(f"  REGRESSION GATE")
+          print(f"{'='*50}")
+          print(f"  Before score : {before_score:.4f}")
+          print(f"  After score  : {after_score:.4f}")
+          print(f"  Score delta  : {score_delta:+.4f}")
+          print(f"  Gate         : {'PASSED ✓' if gate_passed else 'FAILED ✗ (REGRESSION DETECTED)'}")
+          print(f"{'='*50}\n")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"after_score={after_score:.4f}\n")
+              f.write(f"score_delta={score_delta:.4f}\n")
+              f.write(f"gate_passed={'true' if gate_passed else 'false'}\n")
+          PYEOF
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Job 4: Log to MLflow + Slack notification
+  # Always runs so failures are also captured and reported.
+  # ────────────────────────────────────────────────────────────────────────
+  log-and-notify:
+    name: Log to MLflow and Send Slack Notification
+    needs: [snapshot-before-score, run-corpus-pipeline, regression-gate]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install mlflow requests
+
+      - name: Log corpus_refresh run to MLflow
+        env:
+          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+          BEFORE_SCORE: ${{ needs.snapshot-before-score.outputs.before_score }}
+          AFTER_SCORE: ${{ needs.regression-gate.outputs.after_score }}
+          SCORE_DELTA: ${{ needs.regression-gate.outputs.score_delta }}
+          GATE_PASSED: ${{ needs.regression-gate.outputs.gate_passed }}
+          DAG_STATUS: ${{ needs.run-corpus-pipeline.outputs.dag_status }}
+          TRIGGER_REASON: ${{ github.event.inputs.trigger_reason }}
+          TRIGGER_SOURCE: ${{ github.event.inputs.trigger_source }}
+        run: |
+          python - <<'PYEOF'
+          import mlflow, os
+          from datetime import datetime
+
+          mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+          mlflow.set_experiment("monitoring")
+
+          dag_status   = os.environ.get("DAG_STATUS", "unknown")
+          gate_passed  = os.environ.get("GATE_PASSED", "false") == "true"
+          before_score = float(os.environ.get("BEFORE_SCORE", "0") or "0")
+          after_score  = float(os.environ.get("AFTER_SCORE",  "0") or "0")
+          score_delta  = float(os.environ.get("SCORE_DELTA",  "0") or "0")
+
+          if dag_status != "success":
+              refresh_status = "dag_failed"
+          elif gate_passed:
+              refresh_status = "refreshed"
+          else:
+              # Corpus data was updated by Airflow but the regression gate
+              # determined the score degraded — mark as aborted so the new
+              # corpus is not adopted as the baseline.
+              refresh_status = "aborted_regression"
+
+          timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+
+          with mlflow.start_run(run_name=f"corpus_refresh_{timestamp}"):
+              # Core tags — enables filtering in MLflow UI
+              mlflow.set_tag("run_type", "corpus_refresh")
+              mlflow.set_tag("refresh_status", refresh_status)
+              mlflow.set_tag("trigger_reason", os.environ.get("TRIGGER_REASON", "unknown"))
+              mlflow.set_tag("trigger_source", os.environ.get("TRIGGER_SOURCE", "unknown"))
+              mlflow.set_tag("github_run_id",  "${{ github.run_id }}")
+              mlflow.set_tag("git_sha",        "${{ github.sha }}")
+
+              # Before/after scores for auditability
+              mlflow.log_metric("before_selection_score",  before_score)
+              mlflow.log_metric("after_selection_score",   after_score)
+              mlflow.log_metric("score_delta",             score_delta)
+              mlflow.log_metric("regression_gate_passed",  1 if gate_passed else 0)
+
+          print(f"Logged corpus_refresh run to MLflow — status={refresh_status}")
+          PYEOF
+
+      - name: Send Slack notification
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL || '' }}
+          BEFORE_SCORE: ${{ needs.snapshot-before-score.outputs.before_score }}
+          AFTER_SCORE: ${{ needs.regression-gate.outputs.after_score }}
+          SCORE_DELTA: ${{ needs.regression-gate.outputs.score_delta }}
+          GATE_PASSED: ${{ needs.regression-gate.outputs.gate_passed }}
+          DAG_STATUS: ${{ needs.run-corpus-pipeline.outputs.dag_status }}
+        run: |
+          python - <<'PYEOF'
+          import os, requests, json
+
+          webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
+          if not webhook_url:
+              print("SLACK_WEBHOOK_URL not set — skipping Slack notification")
+              exit(0)
+
+          dag_status    = os.environ.get("DAG_STATUS", "unknown")
+          gate_passed   = os.environ.get("GATE_PASSED", "false") == "true"
+          before_score  = os.environ.get("BEFORE_SCORE", "N/A")
+          after_score   = os.environ.get("AFTER_SCORE",  "N/A")
+          score_delta   = os.environ.get("SCORE_DELTA",  "N/A")
+          trigger_reason = "${{ github.event.inputs.trigger_reason }}"
+          trigger_source = "${{ github.event.inputs.trigger_source }}"
+          run_url = (
+              "${{ github.server_url }}/${{ github.repository }}"
+              "/actions/runs/${{ github.run_id }}"
+          )
+
+          if dag_status != "success":
+              emoji  = ":x:"
+              title  = "Corpus Refresh — Airflow Pipeline Failed"
+              color  = "#FF0000"
+              detail = (
+                  f"The Airflow `interview_scraping_pipeline` DAG "
+                  f"did not complete successfully (state: `{dag_status}`).\n"
+                  f"Corpus was *not* updated."
+              )
+          elif gate_passed:
+              try:
+                  delta_val = float(score_delta)
+                  delta_str = f"{delta_val:+.4f}"
+              except (ValueError, TypeError):
+                  delta_str = score_delta
+              emoji  = ":white_check_mark:"
+              title  = "Corpus Refresh — Completed Successfully"
+              color  = "#36A64F"
+              detail = (
+                  f"Corpus refreshed and regression gate passed.\n"
+                  f"Score delta: *{delta_str}*"
+              )
+          else:
+              try:
+                  delta_val = float(score_delta)
+                  delta_str = f"{delta_val:+.4f}"
+              except (ValueError, TypeError):
+                  delta_str = score_delta
+              emoji  = ":rotating_light:"
+              title  = "Corpus Refresh — Aborted (Regression Detected)"
+              color  = "#FF6600"
+              detail = (
+                  f"Regression gate *failed* — new corpus degraded retrieval quality.\n"
+                  f"Score delta: *{delta_str}*\n"
+                  f"The refresh run has been tagged `aborted_regression` in MLflow. "
+                  f"Manual investigation required."
+              )
+
+          payload = {
+              "attachments": [{
+                  "color": color,
+                  "blocks": [
+                      {
+                          "type": "header",
+                          "text": {"type": "plain_text", "text": f"{emoji}  {title}"},
+                      },
+                      {
+                          "type": "section",
+                          "fields": [
+                              {"type": "mrkdwn", "text": f"*Trigger:*\n{trigger_reason}"},
+                              {"type": "mrkdwn", "text": f"*Source:*\n{trigger_source}"},
+                              {"type": "mrkdwn", "text": f"*Before Score:*\n{before_score}"},
+                              {"type": "mrkdwn", "text": f"*After Score:*\n{after_score}"},
+                          ],
+                      },
+                      {
+                          "type": "section",
+                          "text": {
+                              "type": "mrkdwn",
+                              "text": f"{detail}\n\n<{run_url}|View GitHub Actions Run>",
+                          },
+                      },
+                  ],
+              }]
+          }
+
+          resp = requests.post(webhook_url, json=payload, timeout=10)
+          if resp.status_code == 200:
+              print(f"Slack notification sent ({title})")
+          else:
+              print(f"Slack notification failed: {resp.status_code} {resp.text}")
+          PYEOF
+
+      - name: Post GitHub Actions summary
+        if: always()
+        run: |
+          GATE="${{ needs.regression-gate.outputs.gate_passed }}"
+          DAG="${{ needs.run-corpus-pipeline.outputs.dag_status }}"
+
+          if [ "$DAG" != "success" ]; then
+            STATUS="Airflow DAG Failed"
+          elif [ "$GATE" = "true" ]; then
+            STATUS="Refreshed"
+          else
+            STATUS="Aborted — Regression"
+          fi
+
+          cat >> $GITHUB_STEP_SUMMARY <<SUMMARY
+          ## Corpus Refresh — ${STATUS}
+
+          | Field | Value |
+          |-------|-------|
+          | Trigger | ${{ github.event.inputs.trigger_reason }} |
+          | Source | ${{ github.event.inputs.trigger_source }} |
+          | Airflow DAG status | ${DAG} |
+          | Before score | ${{ needs.snapshot-before-score.outputs.before_score }} |
+          | After score | ${{ needs.regression-gate.outputs.after_score }} |
+          | Score delta | ${{ needs.regression-gate.outputs.score_delta }} |
+          | Regression gate | ${{ needs.regression-gate.outputs.gate_passed }} |
+          SUMMARY

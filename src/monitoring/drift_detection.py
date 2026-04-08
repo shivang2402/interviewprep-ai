@@ -34,14 +34,32 @@ import os
 import sys
 import tempfile
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
 import mlflow
 import numpy as np
 import pandas as pd
 import psycopg2
+import yaml
 from scipy.spatial.distance import cosine as cosine_distance
 
 from src.monitoring.utils import load_config, get_db_params
+
+# ─── Retraining threshold loader ───────────────────────────────────────────
+
+def load_retraining_thresholds() -> dict:
+    """
+    Load retraining trigger thresholds from
+    src/evaluation/retraining_thresholds.yaml (version-controlled alongside
+    retrieval_model_configs.yaml for auditability).
+    """
+    config_path = (
+        Path(__file__).resolve().parents[1]
+        / "evaluation"
+        / "retraining_thresholds.yaml"
+    )
+    with open(config_path) as f:
+        return yaml.safe_load(f)
 
 # ─── Logging ───────────────────────────────────────────────────────────────
 
@@ -243,10 +261,17 @@ def evaluate_drift(
     p95_dim_shift: float,
     evidently_pct: float,
     cfg: dict,
+    evidently_threshold: float,
 ) -> tuple[bool, list[str]]:
     """
     Composite drift flag: drift is detected if ANY TWO of the three metrics
     breach their threshold. Single breaches are logged as warnings.
+
+    centroid_cosine_distance and per_dim_shift_std thresholds come from
+    src/monitoring/config.yaml (operational tuning parameters).
+    evidently_threshold comes from src/evaluation/retraining_thresholds.yaml
+    so it is version-controlled alongside the retrieval eval config.
+
     Returns (drift_detected, list_of_breached_metric_names).
     """
     thresholds = cfg["drift_thresholds"]
@@ -258,8 +283,8 @@ def evaluate_drift(
     if p95_dim_shift > thresholds["per_dim_shift_std"]:
         breaches.append(f"per_dim_shift_p95 ({p95_dim_shift:.4f} > {thresholds['per_dim_shift_std']})")
 
-    if evidently_pct > thresholds["evidently_drift_pct"]:
-        breaches.append(f"evidently_drift_pct ({evidently_pct:.2%} > {thresholds['evidently_drift_pct']:.0%})")
+    if evidently_pct > evidently_threshold:
+        breaches.append(f"evidently_drift_pct ({evidently_pct:.2%} > {evidently_threshold:.0%})")
 
     drift_detected = len(breaches) >= 2
 
@@ -448,6 +473,13 @@ def main():
     args = parse_args()
     cfg = load_config()
 
+    # Load evidently_drift_pct from the version-controlled retraining thresholds
+    # (src/evaluation/retraining_thresholds.yaml) so both retraining triggers
+    # are auditable in the same place.
+    retraining_cfg = load_retraining_thresholds()
+    evidently_threshold = retraining_cfg["retraining_triggers"]["evidently_drift_pct"]
+    log.info("Evidently drift threshold (from retraining_thresholds.yaml): %.0f%%", evidently_threshold * 100)
+
     week_start = (datetime.now(timezone.utc) - timedelta(days=args.days)).strftime("%Y-%m-%d")
     log.info("Drift detection for week starting %s (%d-day window)", week_start, args.days)
 
@@ -491,7 +523,7 @@ def main():
     }
 
     # ── Step 4d: Evaluate composite drift flag ─────────────────────────────
-    drift_detected, breaches = evaluate_drift(centroid_dist, p95_dim_shift, evidently_pct, cfg)
+    drift_detected, breaches = evaluate_drift(centroid_dist, p95_dim_shift, evidently_pct, cfg, evidently_threshold)
 
     # ── Save Evidently HTML report locally (for MLflow artifact) ───────────
     html_report_path = os.path.join(tempfile.gettempdir(), f"drift_report_{week_start}.html")
