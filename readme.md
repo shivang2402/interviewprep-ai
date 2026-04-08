@@ -1,5 +1,17 @@
 # InterviewPrep-AI
 
+## Full Stack Application
+
+InterviewPrep-AI includes a full-stack web application on top of the data pipeline:
+
+- **Backend** (`backend/`): A FastAPI REST API that exposes the processed interview data from PostgreSQL. Supports paginated document browsing, full-text search, semantic search (via pgvector embeddings), and statistics aggregation. See [backend/README.md](backend/README.md) for setup and endpoint documentation.
+
+- **Frontend** (`ui/`): A Next.js 14 (TypeScript + Tailwind CSS) application that provides a clean interface for browsing documents, searching with full-text or semantic modes, and viewing pipeline statistics. See [ui/README.md](ui/README.md) for setup instructions.
+
+The frontend communicates exclusively with the backend API. The backend reads from the same PostgreSQL database populated by the data pipeline. No data flows directly from the UI to the database.
+
+---
+
 ## 1. Project Overview
 
 InterviewPrep-AI is an end-to-end data engineering pipeline that scrapes interview experiences from three major platforms — **GeeksforGeeks**, **LeetCode**, and **Medium** — preprocesses the raw data through a multi-step transformation pipeline, validates output integrity, and loads the cleaned documents into a PostgreSQL database. The whole thing is orchestrated by **Apache Airflow**, with raw and processed artifacts stored in **Google Cloud Storage (GCS)**. After every run, the team gets an email report with the full pipeline status.
@@ -107,3 +119,86 @@ interviewprep-ai/
 ## Wrap-up
 
 This project brings together web scraping, NLP preprocessing, and structured data loading into a single Airflow-orchestrated pipeline. For setup instructions and how to run tests, see [`useme.md`](useme.md). For detailed pipeline architecture, see [`data-pipeline-readme.md`](docs/data-pipeline-readme.md).
+
+---
+
+## Full Architecture
+
+### Data Pipeline
+
+The pipeline runs as an Airflow DAG. Three scrapers (GeeksforGeeks, LeetCode, Medium) run in parallel, writing raw documents to GCS. The preprocessing pipeline then processes these documents through six sequential steps: content normalization, PII removal, quality filtering, deduplication (exact + near-duplicate via MinHash LSH), entity extraction (company, role, topics via regex and spaCy NER), and schema validation. Valid documents are written to GCS and loaded into PostgreSQL via idempotent upserts. Failed documents are quarantined for review. The pipeline supports checkpoint-based resume on retry.
+
+### Embedding Pipeline
+
+After documents are loaded, the chunking pipeline splits them into semantic chunks based on interview round boundaries (or fixed windows for unstructured content). Each chunk gets a context header prepended (company, role, round). The embedding pipeline then generates vector embeddings using sentence-transformer models (all-MiniLM-L6-v2 at 384 dimensions, all-mpnet-base-v2 at 768 dimensions) and stores them in PostgreSQL via the pgvector extension.
+
+### Backend API
+
+The FastAPI backend sits between the database and the frontend. It exposes endpoints for paginated document listing with filters, document detail and chunk retrieval, full-text search (using PostgreSQL's tsvector/tsquery), semantic search (encoding the query with the same sentence-transformer model and using pgvector cosine distance), and statistics aggregation. The backend supports two database connection modes: TCP (for local development via Cloud SQL Auth Proxy) and Unix socket (for Cloud Run deployment).
+
+### Frontend
+
+The Next.js frontend consumes the backend API. It provides a home page with search and overview stats, a filterable document browser, document detail views with collapsible chunks, a search page with toggle between full-text and semantic modes, and a statistics dashboard showing company rankings, topic frequencies, and outcome distributions. All filter options are populated dynamically from the database via the API.
+
+### How Semantic Search Works
+
+1. The data pipeline chunks documents and generates embeddings using sentence-transformers
+2. Embeddings are stored in the `document_chunks` table using pgvector's `vector` type
+3. When a user submits a semantic search query, the backend encodes the query string using the same model
+4. The backend queries pgvector using cosine distance (`<=>` operator) to find the most similar chunks
+5. Results are returned with similarity scores and displayed in the UI
+
+### Architecture Diagram
+
+```
+                        +------------------+
+                        |   Apache Airflow |
+                        +--------+---------+
+                                 |
+              +------------------+------------------+
+              |                  |                  |
+        +-----+------+   +------+-----+   +-------+----+
+        | GFG Scraper|   | LC Scraper |   | Med Scraper|
+        +-----+------+   +------+-----+   +-------+----+
+              |                  |                  |
+              +------------------+------------------+
+                                 |
+                         +-------+--------+
+                         | GCS (Raw Data) |
+                         +-------+--------+
+                                 |
+                    +------------+-------------+
+                    | Preprocessing Pipeline   |
+                    | (6 steps, checkpointed)  |
+                    +------------+-------------+
+                                 |
+                    +------------+-------------+
+                    | GCS (Processed + Reports)|
+                    +------------+-------------+
+                                 |
+                    +------------+-------------+
+                    | PostgreSQL (Cloud SQL)    |
+                    | - processed_documents    |
+                    | - interview_metadata     |
+                    | - companies / roles      |
+                    +------------+-------------+
+                                 |
+                    +------------+-------------+
+                    | Chunking + Embeddings    |
+                    | (sentence-transformers)  |
+                    +------------+-------------+
+                                 |
+                    +------------+-------------+
+                    | document_chunks + pgvec  |
+                    +------------+-------------+
+                                 |
+                    +------------+-------------+
+                    | FastAPI Backend          |
+                    | (REST API)              |
+                    +------------+-------------+
+                                 |
+                    +------------+-------------+
+                    | Next.js Frontend         |
+                    | (Browser)               |
+                    +----------------------------+
+```
