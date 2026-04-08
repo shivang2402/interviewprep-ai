@@ -1,6 +1,10 @@
 import Link from "next/link";
 import type { SearchResult, SemanticSearchResult } from "@/lib/types";
 
+function stripMarkdown(text: string): string {
+  return text.replace(/\*\*(.*?)\*\*/g, "$1").replace(/\*(.*?)\*/g, "$1");
+}
+
 export function FulltextResults({ results }: { results: SearchResult[] }) {
   if (results.length === 0) {
     return <p className="text-sm text-neutral-500 mt-6">No results found.</p>;
@@ -25,10 +29,9 @@ export function FulltextResults({ results }: { results: SearchResult[] }) {
             {r.interview_outcome && <span>Outcome: {r.interview_outcome}</span>}
           </div>
           {r.snippet && (
-            <p
-              className="mt-2 text-xs leading-relaxed text-neutral-600"
-              dangerouslySetInnerHTML={{ __html: r.snippet }}
-            />
+            <p className="mt-2 text-xs leading-relaxed text-neutral-600">
+              {stripMarkdown(r.snippet)}
+            </p>
           )}
         </Link>
       ))}

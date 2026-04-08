@@ -96,6 +96,10 @@ LEFT JOIN public.companies c ON im.company_id = c.company_id
 LEFT JOIN public.roles r ON im.role_id = r.role_id
 WHERE to_tsvector('english', coalesce(pd.title,'') || ' ' || coalesce(pd.cleaned_content,''))
       @@ plainto_tsquery('english', %s)
+  AND ts_rank(
+        to_tsvector('english', coalesce(pd.title,'') || ' ' || coalesce(pd.cleaned_content,'')),
+        plainto_tsquery('english', %s)
+      ) > 0
 """
 
 SEMANTIC_SEARCH = """

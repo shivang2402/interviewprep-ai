@@ -43,7 +43,7 @@ def fulltext_search(
     difficulty: Optional[str] = None,
 ):
     sql = q.FULLTEXT_SEARCH
-    params = [q_param, q_param, q_param]
+    params = [q_param, q_param, q_param, q_param]
 
     if platform:
         sql += " AND pd.source_platform = %s"
