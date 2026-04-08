@@ -2,7 +2,7 @@
 
 ## Overview
 
-InterviewPrep-AI is an end-to-end data engineering pipeline that scrapes interview experiences from GeeksforGeeks, LeetCode, and Medium, processes raw data through a configurable multi-step transformation pipeline, validates output integrity, and loads cleaned documents into PostgreSQL. A full-stack web application (FastAPI backend + Next.js frontend) sits on top, exposing the data through a REST API with full-text and semantic search. The pipeline is orchestrated by Apache Airflow with artifacts stored in Google Cloud Storage (GCS).
+InterviewPrep-AI is an end-to-end data engineering pipeline that scrapes interview experiences from GeeksforGeeks, LeetCode, and Medium, processes raw data through a configurable multi-step transformation pipeline, validates output integrity, and loads cleaned documents into PostgreSQL. A full-stack web application (FastAPI backend + Next.js frontend) sits on top, exposing the data through a REST API with full-text and semantic search. A RAG (Retrieval-Augmented Generation) pipeline provides AI-powered interview preparation answers using hybrid retrieval (vector + BM25) and OpenAI generation. An automated evaluation framework benchmarks multiple retrieval strategies, selects the best model, and deploys it via Vertex AI Model Registry. The pipeline is orchestrated by Apache Airflow with artifacts stored in Google Cloud Storage (GCS), and model experiments are tracked with MLflow.
 
 ---
 
@@ -24,6 +24,32 @@ Database Loader --> PostgreSQL
 Chunking & Embeddings --> pgvector
   |
 Email Notification
+
+        --- ML/Evaluation Layer ---
+
+Eval Dataset Labelling
+  |  - Multi-strategy retrieval pooling (Vector, BM25, Hybrid)
+  |  - LLM-as-a-judge relevance scoring (GPT-4o-mini)
+  |  - Gold standard dataset --> eval_dataset table
+  |
+Retrieval Model Evaluation (PipelineOrchestrator)
+  |  - 5 configs: 2 pure vector, 1 pure BM25, 2 hybrid
+  |  - Metrics: MRR, Recall, Precision, NDCG @ k
+  |  - Bias analysis (fairness gaps, representation)
+  |  - Best model selection --> Vertex AI Model Registry
+  |  - Experiment tracking --> MLflow
+  |
+CI/CD: eval_pipeline.yml (auto-triggered on config changes)
+
+        --- RAG Pipeline Layer ---
+
+Vertex AI Model Registry --> best embedding model
+  |
+HybridRetriever (vector + BM25 via RRF)
+  |
+RAGGenerator (OpenAI gpt-4.1-mini)
+  |  - Context-grounded answers with source citations
+  |  - Token usage tracking
 
         --- Web Application Layer ---
 
@@ -134,7 +160,45 @@ Config-driven, single-process, checkpoint-based resilience. Raw docs flow throug
 
 ---
 
-### 7. Orchestration (`dags/`)
+### 7. RAG Pipeline (`src/rag_pipeline/`)
+
+Retrieval-Augmented Generation system that answers interview prep questions using hybrid retrieval and OpenAI generation, with model selection driven by Vertex AI Model Registry.
+
+| File | Purpose |
+|------|---------|
+| `config.yaml` | Master RAG config: GCP project settings (project ID, region, Vertex AI model registry name), database connection parameters, MLflow tracking URI, retrieval config (`top_k=8`, RRF parameters, BM25/vector weights), embedding models mapping (`all-MiniLM-L6-v2` dim:384, `all-mpnet-base-v2` dim:768) with DB column names, generation config (OpenAI `gpt-4.1-mini`, temperature 0.3, max_tokens 1024). |
+| `retriever.py` | **`HybridRetriever` class.** Loads `SentenceTransformer` model for query encoding. `_vector_search()`: pgvector cosine similarity via dynamic SQL (joins document_chunks, processed_documents, interview_metadata, companies, roles). `_bm25_search()`: full-text search using `to_tsvector`/`plainto_tsquery` with `ts_rank_cd`. `_reciprocal_rank_fusion()`: merges vector and BM25 results using weighted RRF. `retrieve()` returns list of `{id, text, source_url, company, role}`. |
+| `generator.py` | **`RAGGenerator` class.** Takes `HybridRetriever` + generation config. Uses OpenAI client (`OPENAI_API_KEY` env var). `generate()`: retrieves chunks, builds prompt, calls OpenAI, returns response with answer, chunks, model, and token usage metrics. |
+| `prompt.py` | Prompt construction utilities. `SYSTEM_PROMPT`: instructs GPT to be a technical interview prep assistant — ground claims in context, cite sources inline, handle topic mismatches gracefully, reject non-interview questions. `build_context()`: formats chunks as numbered sections. `build_messages()`: constructs system + user message pair. |
+| `model_registry.py` | **Model registry orchestration.** `_get_config_from_registry()`: queries Vertex AI Model Registry for latest model, extracts `best-config` label. `_get_model_name_from_mlflow()`: finds MLflow pipeline parent run, reads `best_config` tag, matches child run, extracts `model_name`. `get_deployed_embedding_model()`: full flow combining both, validates against config, returns `{model_name, embedding_dim, embedding_column}`. |
+| `pipeline.py` | **`build_generator()` factory function.** Loads config, resolves deployed embedding model via registry, initializes `HybridRetriever` and `RAGGenerator`. Entry point for the RAG system. |
+
+---
+
+### 8. Evaluation Module (`src/evaluation/`)
+
+Automated retrieval model evaluation framework that benchmarks multiple embedding/retrieval configurations against a gold standard dataset and selects the best model.
+
+| File | Purpose |
+|------|---------|
+| `retrieval_model_configs.yaml` | Evaluation config: MLflow tracking URI, `relevance_threshold=1`, `max_k=15`, BM25 defaults. Defines 5 retrieval configs: (1) pure vector MiniLM, (2) pure vector mpnet, (3) pure BM25, (4) hybrid MiniLM+BM25 (RRF 0.5/0.5), (5) hybrid mpnet+BM25 (RRF 0.5/0.5). |
+| `evaluator.py` | **Core evaluation engine.** `Evaluator` class computes ranking metrics: `metric_mrr_at_k()`, `metric_recall_at_k()`, `metric_precision_at_k()`, `metric_ndcg_at_k()`. `RetrieverStrategy` abstract class with implementations: `VectorRetriever` (pgvector cosine), `BM25Retriever` (full-text lexical), `HybridRetriever` (RRF fusion). `BiasReport` dataclass for fairness metrics (representation, fairness gaps, disparity). `PipelineOrchestrator`: loads gold standard from `eval_dataset` table, runs each config, computes metrics + bias analysis, logs child runs to MLflow per config + parent run with best config determination. |
+
+---
+
+### 9. Eval Dataset Labelling (`src/eval_dataset_labelling/`)
+
+Pipeline for generating gold standard retrieval evaluation datasets using multi-strategy retrieval pooling and LLM-as-a-judge relevance scoring.
+
+| File | Purpose |
+|------|---------|
+| `dataset_generator.py` | **Retrieval pooling pipeline.** Runs 3 retrieval strategies (Vector, BM25, Hybrid) against PostgreSQL+pgvector. `ChunkStore`: DB layer for pgvector queries. `BM25Index`: in-memory BM25 indexing. Pools results per query with `pool_results_for_query()` to deduplicate chunks while tracking source rankings. Loads queries from GCS CSV. Outputs CSV with columns: query_id, query_text, query_category, chunk_id, document_id, chunk_text, sources, vector/bm25/hybrid ranks and scores. |
+| `llm_relevance_judge.py` | **LLM-as-a-judge scorer.** Reads pooled dataset from GCS. Sends each (query, chunk) pair to GPT-4o-mini for relevance scoring (0=not relevant, 1=partially, 2=highly relevant). Features: detailed grading rubric, chunk truncation (1500 chars), 5 concurrent workers, retry with exponential backoff (max 3 retries), resume support (skips scored rows), batch checkpointing (every 200 rows to GCS). |
+| `labeled_data_to_db.py` | **Golden dataset loader.** Reads LLM-scored CSV from GCS. Inserts relevant pairs (relevance >= 1) into `eval_dataset` table via batch upserts (500 rows/batch). Per-row error isolation on batch failure. Logs relevance distribution and unique query coverage by category. |
+
+---
+
+### 10. Orchestration (`dags/`)
 
 | File | Purpose |
 |------|---------|
@@ -142,7 +206,7 @@ Config-driven, single-process, checkpoint-based resilience. Raw docs flow throug
 
 ---
 
-### 8. Tests (`test/`)
+### 11. Tests (`test/`)
 
 Framework: pytest with unittest.mock (no real GCS, DB, or network calls).
 
@@ -171,18 +235,29 @@ Framework: pytest with unittest.mock (no real GCS, DB, or network calls).
 | `test/storage/test_gcs_backend.py` | GCS backend tests: all auth paths, CRUD operations. |
 | `test/storage/test_storage_backend.py` | Storage backend interface tests. |
 | `test/test_dag.py` | DAG structure validation (task dependencies, operator types). |
+| `test/rag_pipeline/conftest.py` | Shared RAG pipeline test fixtures (mock retriever, generator). |
+| `test/rag_pipeline/test_retriever.py` | HybridRetriever tests: vector search, BM25 search, RRF fusion, retrieve. |
+| `test/rag_pipeline/test_generator.py` | RAGGenerator tests: generate method, OpenAI API mocking. |
+| `test/rag_pipeline/test_model_registry.py` | Model registry tests: Vertex AI and MLflow integration mocking. |
+| `test/rag_pipeline/test_pipeline.py` | Tests for `build_generator` factory and config loading. |
+| `test/rag_pipeline/test_prompt.py` | Prompt building and context formatting tests. |
+| `test/evaluation/test_evaluator.py` | Evaluator tests: all RetrieverStrategy implementations, metrics calculation, bias reporting, PipelineOrchestrator. |
+| `test/eval_dataset_labelling/test_dataset_generator.py` | ChunkStore, BM25Index, score normalization, hybrid fusion, result pooling, CSV I/O tests. |
+| `test/eval_dataset_labelling/test_llm_relevance_judge.py` | Chunk truncation, LLM response parsing, retry logic, concurrent judging tests. |
+| `test/eval_dataset_labelling/test_labeled_data_to_db.py` | CSV loading, batch insertion, conflict handling, error isolation tests. |
 
 ---
 
-### 9. CI/CD (`.github/workflows/`)
+### 12. CI/CD (`.github/workflows/`)
 
 | File | Purpose |
 |------|---------|
 | `ci.yml` | GitHub Actions workflow. Runs on push to main and PRs. Python 3.10, installs deps + Airflow + spaCy model + sentence-transformers. Runs pytest with 80% coverage threshold. Uploads test results + HTML reports as artifacts. |
+| `eval_pipeline.yml` | **Retrieval model evaluation & deployment pipeline.** Triggered on changes to `src/evaluation/retrieval_model_configs.yaml`. Jobs: (1) `detect-changes`: checks if config changed. (2) `evaluate`: runs `PipelineOrchestrator`, finds best model by selection_score, compares against previous deployed model. (3) `deploy` (if >= 1% improvement): uploads artifacts to GCS, registers model in Vertex AI Model Registry with labels and aliases, tags MLflow parent run as deployed. (4) `notify`: posts summary comment to PR with results table and config diff. |
 
 ---
 
-### 10. Root Configuration Files
+### 13. Root Configuration Files
 
 | File | Purpose |
 |------|---------|
@@ -192,7 +267,19 @@ Framework: pytest with unittest.mock (no real GCS, DB, or network calls).
 
 ---
 
-### 11. Backend API (`backend/`)
+### 14. Documentation (`docs/`)
+
+| File | Purpose |
+|------|---------|
+| `docs/data-pipeline-readme.md` | Comprehensive guide to data acquisition and preprocessing: Airflow DAG structure, detailed scraper implementation guides (GFG, LeetCode, Medium strategies), data flow, configuration, reproducibility. |
+| `docs/model-development-readme.md` | Guide to chunking and embedding: Airflow DAG structure (`chunking_embedding_pipeline`), chunking strategies (single chunk, structural, fixed window), chunk structure with contextual headers, validation checks. |
+| `useme.md` | Quick reference guide: prerequisites, environment setup, dependency table, step-by-step setup, reproducibility guide with idempotency guarantees, test suite overview. |
+| `backend/README.md` | Backend API documentation: project structure, all endpoints, local setup, database connection modes, tables used. |
+| `ui/README.md` | Frontend documentation: project structure, pages and purposes, local setup with npm, backend connection info. |
+
+---
+
+### 15. Backend API (`backend/`)
 
 | File | Purpose |
 |------|---------|
@@ -207,7 +294,7 @@ Framework: pytest with unittest.mock (no real GCS, DB, or network calls).
 
 ---
 
-### 12. Frontend UI (`ui/`)
+### 16. Frontend UI (`ui/`)
 
 | File | Purpose |
 |------|---------|
@@ -245,6 +332,12 @@ gs://interviewprep-ai-data/
   quarantine/{batch_id}/       # Failed validation (for manual review)
   checkpoints/{batch_id}/      # Intermediate pipeline state
   db-report/                   # Database load reports
+  eval/queries.csv             # Evaluation query set
+  eval/retrieval_labeling_dataset.csv  # Pooled retrieval results
+  eval/labeled_dataset.csv     # LLM-scored gold standard dataset
+
+gs://interviewprep-ai-mlflow-artifacts/
+  model-registry/retrieval-models/{timestamp}/  # Deployed model artifacts
 ```
 
 ---
@@ -261,14 +354,21 @@ gs://interviewprep-ai-data/
 8. **Lazy model loading** - spaCy NER model loaded on first use, not at import time
 9. **Parallel scraping + sequential preprocessing** - Scrapers fan out; preprocessing runs single-process with checkpoints
 10. **Email on all outcomes** - Notification sends regardless of pipeline success/failure
+11. **Hybrid retrieval with RRF** - Combines vector similarity and BM25 lexical search via reciprocal rank fusion for better recall
+12. **LLM-as-a-judge evaluation** - GPT-4o-mini scores retrieval relevance to build gold standard datasets, with resume support and batch checkpointing
+13. **Automated model selection & deployment** - CI/CD evaluates retrieval configs, compares against deployed model, auto-deploys on improvement via Vertex AI Model Registry
+14. **MLflow experiment tracking** - Parent/child run hierarchy for evaluation experiments; deployed config tagged for registry lookup
 
 ---
 
 ## External Services
 
-- **Google Cloud Storage** - Data storage (raw, processed, checkpoints, quarantine, reports)
-- **PostgreSQL (Cloud SQL)** - `processed_documents`, `interview_metadata`, `companies`, `roles`, `document_chunks` tables
+- **Google Cloud Storage** - Data storage (raw, processed, checkpoints, quarantine, reports, eval datasets, model artifacts)
+- **PostgreSQL (Cloud SQL)** - `processed_documents`, `interview_metadata`, `companies`, `roles`, `document_chunks`, `eval_dataset` tables
 - **Apache Airflow** - DAG orchestration, task scheduling, XCom passing
 - **spaCy** - NER model (`en_core_web_sm`) for entity recognition
 - **sentence-transformers** - Biencoder models for vector embeddings
 - **pgvector** - PostgreSQL extension for vector similarity search
+- **OpenAI API** - GPT-4.1-mini for RAG answer generation; GPT-4o-mini for LLM-as-a-judge relevance scoring
+- **Vertex AI Model Registry** - Stores deployed retrieval model configs with labels and aliases
+- **MLflow** - Experiment tracking for retrieval model evaluation (parent/child runs, metrics, tags)

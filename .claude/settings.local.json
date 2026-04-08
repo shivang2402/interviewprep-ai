@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la /Users/dhruvkansara/Documents/NEU/Sem3/MLOPs/Project/interviewprep-ai/ui/*.ts /Users/dhruvkansara/Documents/NEU/Sem3/MLOPs/Project/interviewprep-ai/ui/*.js)",
+      "Bash(grep -E \"\\\\.\\(env|dockerfile|yml|yaml|json|cfg|conf|toml\\)$\")",
+      "Bash(ls:*)"
+    ]
+  }
+}

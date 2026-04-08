@@ -147,21 +147,39 @@ def _get_model_name_from_mlflow(config: dict, config_label: str) -> str:
     return model_name
 
 
+def _resolve_model_from_label(config_label: str, model_map: dict) -> str:
+    """
+    Try to resolve model name directly from the Vertex AI config label
+    without needing MLflow. The label format is typically:
+    'sentence-transformers-all-minilm-l6-v2_dim384_vector'
+    """
+    for model_name in model_map:
+        # Normalize for comparison: 'all-MiniLM-L6-v2' → 'all-minilm-l6-v2'
+        normalized = model_name.lower().replace("-", "-")
+        label_lower = config_label.lower().replace("-", "-")
+        if normalized in label_lower:
+            return model_name
+    return ""
+
+
 def get_deployed_embedding_model(config: dict) -> dict:
     """
     Full flow:
-      Vertex AI Registry → config label → MLflow parent → child run → model_name → dim/column
+      Vertex AI Registry → config label → resolve model_name → dim/column
+      Falls back to MLflow lookup if label can't be directly resolved.
     """
     model_map = config["embedding_models"]
 
     # Step 1: Get config label from Vertex AI
     config_label = _get_config_from_registry(config)
 
-    # Step 2-3: Find matching MLflow run, extract model_name
-    model_name = _get_model_name_from_mlflow(config, config_label)
+    # Step 2: Try resolving directly from the label (avoids MLflow dependency)
+    model_name_clean = _resolve_model_from_label(config_label, model_map)
 
-    # Step 4: Strip prefix and map to dim/column
-    model_name_clean = model_name.replace("sentence-transformers/", "")
+    if not model_name_clean:
+        # Fallback: query MLflow for the model name
+        model_name = _get_model_name_from_mlflow(config, config_label)
+        model_name_clean = model_name.replace("sentence-transformers/", "")
 
     if model_name_clean not in model_map:
         raise ValueError(

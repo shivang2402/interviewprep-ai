@@ -12,8 +12,7 @@ const geistSans = localFont({
 
 export const metadata: Metadata = {
   title: "InterviewPrep AI",
-  description:
-    "A searchable database of real software engineering interview experiences",
+  description: "AI-powered interview preparation assistant",
 };
 
 export default function RootLayout({
