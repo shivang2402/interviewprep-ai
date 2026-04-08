@@ -7,6 +7,17 @@ function stripMarkdown(text: string): string {
 
 function ParsedAsBanner({ parsed }: { parsed?: ParsedAs }) {
   if (!parsed) return null;
+
+  if (parsed.company_not_found && parsed.company) {
+    return (
+      <p className="mt-4 text-xs text-neutral-500">
+        No results found for{" "}
+        <span className="text-neutral-700 font-medium">{parsed.company}</span>.
+        Showing general results.
+      </p>
+    );
+  }
+
   const parts: string[] = [];
   if (parsed.company) parts.push(parsed.company);
   if (parsed.role) parts.push(parsed.role);

@@ -9,6 +9,7 @@ export interface ParsedAs {
   role?: string;
   level?: string;
   query: string;
+  company_not_found?: boolean;
 }
 
 export interface PaginatedResponse<T> {
