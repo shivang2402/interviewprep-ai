@@ -30,6 +30,7 @@ export default function Home() {
           role: "assistant",
           content: res.answer,
           sources: res.sources,
+          latency_ms: res.latency_ms,
           timestamp: new Date(),
         };
         setMessages((prev) => [...prev, assistantMsg]);
@@ -63,7 +64,7 @@ export default function Home() {
   return (
     <div className="flex flex-col h-[calc(100vh-120px)] max-w-3xl mx-auto w-full">
       <MessageList messages={messages} loading={loading} />
-      <div className="border-t border-neutral-200 bg-white px-4 py-4">
+      <div className="border-t border-slate-200 bg-white/80 backdrop-blur-sm px-4 py-4">
         <ChatInput onSend={handleSend} disabled={loading} />
       </div>
     </div>

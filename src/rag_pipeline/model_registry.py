@@ -4,9 +4,9 @@ Fetches the best deployed embedding model config.
 Flow:
   1. Vertex AI Model Registry → get latest model → read 'best-config' label
      (sanitized, e.g. "sentence-transformers-all-minilm-l6-v2_dim384_vector")
-  2. MLflow → find latest pipeline parent run → read 'best_config' tag/metric
-     → get the original run_name of the best child run
-  3. Search MLflow child runs by that run_name → extract 'model_name' param
+  2. MLflow → find latest pipeline parent run → read 'best_config'
+     tag/metric → find child run → extract 'model_name' param
+  3. (Fallback) Resolve model name directly from the label string
   4. Map to embedding dim + DB column via generation_config.yaml
 """
 
@@ -173,13 +173,17 @@ def get_deployed_embedding_model(config: dict) -> dict:
     # Step 1: Get config label from Vertex AI
     config_label = _get_config_from_registry(config)
 
-    # Step 2: Try resolving directly from the label (avoids MLflow dependency)
-    model_name_clean = _resolve_model_from_label(config_label, model_map)
-
-    if not model_name_clean:
-        # Fallback: query MLflow for the model name
+    # Step 2: Try MLflow first for full experiment tracking
+    model_name_clean = ""
+    try:
         model_name = _get_model_name_from_mlflow(config, config_label)
         model_name_clean = model_name.replace("sentence-transformers/", "")
+    except Exception as e:
+        print(f"MLflow lookup failed ({e}), falling back to label resolution")
+
+    # Step 3: Fallback — resolve directly from Vertex AI label
+    if not model_name_clean:
+        model_name_clean = _resolve_model_from_label(config_label, model_map)
 
     if model_name_clean not in model_map:
         raise ValueError(

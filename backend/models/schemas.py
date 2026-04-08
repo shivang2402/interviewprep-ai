@@ -3,14 +3,16 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
-class ChatRequest(BaseModel):
+class QueryRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
 
 
-class ChatSource(BaseModel):
+class ChunkSource(BaseModel):
+    chunk_id: Optional[str] = None
     company: Optional[str] = None
     role: Optional[str] = None
     source_url: Optional[str] = None
+    score: Optional[float] = None
 
 
 class TokenUsage(BaseModel):
@@ -19,7 +21,8 @@ class TokenUsage(BaseModel):
     total_tokens: int
 
 
-class ChatResponse(BaseModel):
+class QueryResponse(BaseModel):
     answer: str
-    sources: List[ChatSource]
+    sources: List[ChunkSource]
     usage: TokenUsage
+    latency_ms: float

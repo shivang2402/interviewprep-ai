@@ -12,15 +12,20 @@ export default function SourceCard({ sources }: SourceCardProps) {
       ) === i
   );
 
-  if (unique.length === 0) return null;
+  // Show only the top 2 sources by score
+  const top = [...unique]
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+    .slice(0, 2);
+
+  if (top.length === 0) return null;
 
   return (
     <div className="mt-3 border-t border-neutral-200 pt-3">
       <p className="text-xs font-medium text-neutral-500 mb-2">
-        Sources ({unique.length})
+        Sources ({top.length})
       </p>
       <div className="flex flex-wrap gap-2">
-        {unique.map((source, i) => (
+        {top.map((source, i) => (
           <a
             key={i}
             href={source.source_url || "#"}

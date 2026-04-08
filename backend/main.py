@@ -38,6 +38,9 @@ app.include_router(chat.router, prefix="/api")
 
 @app.on_event("startup")
 def startup():
+    # Ensure monitoring table exists
+    chat.ensure_log_table()
+
     try:
         from src.rag_pipeline.pipeline import build_generator
 

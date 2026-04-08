@@ -26,8 +26,14 @@ class RAGGenerator:
         self.client = OpenAI()  # uses OPENAI_API_KEY env var
 
     def generate(self, query: str, top_k: int = None) -> dict:
+        import time
+
+        start_time = time.time()
+
         # 1. Retrieve
-        chunks = self.retriever.retrieve(query, top_k=top_k)
+        retrieval_result = self.retriever.retrieve(query, top_k=top_k)
+        chunks = retrieval_result["chunks"]
+        query_embedding = retrieval_result["query_embedding"]
 
         # 2. Build prompt
         messages = build_messages(query, chunks)
@@ -42,6 +48,7 @@ class RAGGenerator:
 
         answer = response.choices[0].message.content
         usage = response.usage
+        latency_ms = round((time.time() - start_time) * 1000, 2)
 
         return {
             "query": query,
@@ -53,6 +60,8 @@ class RAGGenerator:
                 "completion_tokens": usage.completion_tokens,
                 "total_tokens": usage.total_tokens,
             },
+            "latency_ms": latency_ms,
+            "query_embedding": query_embedding,
         }
 
     def close(self):
