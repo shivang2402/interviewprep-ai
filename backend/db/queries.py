@@ -81,7 +81,7 @@ SELECT
     im.difficulty,
     im.interview_outcome,
     ts_rank(
-        to_tsvector('english', pd.title || ' ' || pd.cleaned_content),
+        to_tsvector('english', coalesce(pd.title,'') || ' ' || coalesce(pd.cleaned_content,'')),
         plainto_tsquery('english', %s)
     ) AS rank,
     ts_headline(
@@ -94,7 +94,7 @@ FROM public.processed_documents pd
 LEFT JOIN public.interview_metadata im ON pd.document_id = im.document_id
 LEFT JOIN public.companies c ON im.company_id = c.company_id
 LEFT JOIN public.roles r ON im.role_id = r.role_id
-WHERE to_tsvector('english', pd.title || ' ' || pd.cleaned_content)
+WHERE to_tsvector('english', coalesce(pd.title,'') || ' ' || coalesce(pd.cleaned_content,''))
       @@ plainto_tsquery('english', %s)
 """
 

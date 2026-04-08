@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from routers import documents, search, stats
+from db.create_indexes import create_indexes
 
 load_dotenv()
 
@@ -27,6 +28,11 @@ app.add_middleware(
 app.include_router(documents.router, prefix="/api")
 app.include_router(search.router, prefix="/api")
 app.include_router(stats.router, prefix="/api")
+
+
+@app.on_event("startup")
+def startup():
+    create_indexes()
 
 
 @app.get("/api/health")
