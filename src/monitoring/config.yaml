@@ -1,0 +1,64 @@
+# ─── Monitoring Configuration ──────────────────────────────────────────────
+# Single config file for all src/monitoring/ modules.
+# DB credentials use ${ENV_VAR} placeholders — resolved at load time from .env
+
+database:
+  host: 34.148.0.165
+  port: 5432
+  dbname: interviewprep-ai-database
+  user: postgres
+  password: admin
+
+embedding:
+  model_name: "all-MiniLM-L6-v2"
+  dimension: 384
+
+gcs:
+  bucket: "interviewprep-ai-data"
+  reference_distribution_path: "monitoring/reference_distribution.npz"
+  drift_reports_prefix: "monitoring/drift_reports"
+
+drift_thresholds:
+  centroid_cosine_distance: 0.15
+  per_dim_shift_std: 2.0          # flag if p95 shift > 2× reference std
+  evidently_drift_pct: 0.30       # flag if >30% of dimensions drifted
+  min_production_queries: 20      # skip drift check if fewer queries
+
+mlflow:
+  experiment_name: "monitoring"
+
+
+# ─── Monitoring Configuration ──────────────────────────────────────────────
+# Single config file for all src/monitoring/ modules.
+# DB credentials use ${ENV_VAR} placeholders — resolved at load time from .env
+#
+# Additional env vars required for drift_detection.py:
+#   MLFLOW_TRACKING_URI or MLFLOW_HOST — MLflow server endpoint
+#   GITHUB_TOKEN — for triggering corpus_refresh.yml via workflow_dispatch
+#   GITHUB_REPO — e.g. "your-org/interviewprep-ai"
+#   SLACK_WEBHOOK_URL — for posting drift check results
+
+database:
+  host: ${DB_HOST}
+  port: ${DB_PORT}
+  dbname: ${DB_NAME}
+  user: ${DB_USER}
+  password: ${DB_PASSWORD}
+
+embedding:
+  model_name: "all-MiniLM-L6-v2"
+  dimension: 384
+
+gcs:
+  bucket: "interviewprep-ai-data"
+  reference_distribution_path: "monitoring/reference_distribution.npz"
+  drift_reports_prefix: "monitoring/drift_reports"
+
+drift_thresholds:
+  centroid_cosine_distance: 0.15
+  per_dim_shift_std: 2.0          # flag if p95 shift > 2× reference std
+  evidently_drift_pct: 0.30       # flag if >30% of dimensions drifted
+  min_production_queries: 20      # skip drift check if fewer queries
+
+mlflow:
+  experiment_name: "monitoring"
