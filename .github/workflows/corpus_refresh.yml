@@ -1,0 +1,137 @@
+# .github/workflows/corpus_refresh.yml
+#
+# Corpus Refresh Pipeline
+# ───────────────────────
+# Triggered by two weekly monitoring checks (both run on Mondays):
+#   - drift_detection.yml     → fires when Evidently drift > 30% of features
+#   - weekly_performance_check.yml → fires when eval score drops > 3% from baseline
+#
+# What "corpus refresh" means for this system:
+#   Re-scrape → re-chunk → re-embed → re-index into pgvector
+#
+# This workflow triggers the pre-existing Airflow DAG
+# `interview_scraping_pipeline` via the Airflow REST API.
+# That DAG picks up from the last scrape date (stored in Airflow Variables),
+# pulls only new content, then chains into `chunking_embedding_pipeline`.
+
+name: Corpus Refresh
+
+on:
+  workflow_dispatch:
+    inputs:
+      trigger_reason:
+        description: "Human-readable reason for triggering corpus refresh"
+        required: true
+        default: "manual"
+      trigger_source:
+        description: "Which monitor fired: drift_detection | performance_monitor | manual"
+        required: false
+        default: "manual"
+      # Drift-trigger context (populated by drift_detection.py)
+      centroid_distance:
+        description: "Centroid cosine distance (drift trigger only)"
+        required: false
+        default: ""
+      evidently_drift_pct:
+        description: "Evidently drift fraction (drift trigger only)"
+        required: false
+        default: ""
+      p95_dim_shift:
+        description: "P95 per-dim shift (drift trigger only)"
+        required: false
+        default: ""
+      # Performance-trigger context (populated by performance_monitor.py)
+      score_drop_pct:
+        description: "Fractional score drop from baseline (performance trigger only)"
+        required: false
+        default: ""
+      current_selection_score:
+        description: "Current weekly eval selection_score"
+        required: false
+        default: ""
+      baseline_selection_score:
+        description: "Deployed baseline selection_score"
+        required: false
+        default: ""
+
+jobs:
+  trigger-airflow-dag:
+    name: Trigger Airflow Scraping Pipeline
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Log trigger context
+        run: |
+          echo "=========================================="
+          echo "  Corpus Refresh Triggered"
+          echo "=========================================="
+          echo "  Reason  : ${{ github.event.inputs.trigger_reason }}"
+          echo "  Source  : ${{ github.event.inputs.trigger_source }}"
+          echo ""
+          if [ "${{ github.event.inputs.trigger_source }}" = "drift_detection" ]; then
+            echo "  Drift metrics:"
+            echo "    centroid_distance   = ${{ github.event.inputs.centroid_distance }}"
+            echo "    evidently_drift_pct = ${{ github.event.inputs.evidently_drift_pct }}"
+            echo "    p95_dim_shift       = ${{ github.event.inputs.p95_dim_shift }}"
+          elif [ "${{ github.event.inputs.trigger_source }}" = "performance_monitor" ]; then
+            echo "  Performance metrics:"
+            echo "    current_score   = ${{ github.event.inputs.current_selection_score }}"
+            echo "    baseline_score  = ${{ github.event.inputs.baseline_selection_score }}"
+            echo "    score_drop_pct  = ${{ github.event.inputs.score_drop_pct }}"
+          fi
+          echo "=========================================="
+
+      - name: Trigger Airflow interview_scraping_pipeline DAG
+        env:
+          AIRFLOW_API_URL: ${{ secrets.AIRFLOW_API_URL }}
+          AIRFLOW_API_TOKEN: ${{ secrets.AIRFLOW_API_TOKEN }}
+        run: |
+          # The interview_scraping_pipeline DAG has schedule=None (manual only).
+          # It reads the last_scrape_date from Airflow Variables set by prior
+          # runs and passes it to each scraper so only new content is fetched.
+          # It then chains into chunking_embedding_pipeline automatically via
+          # a TriggerDagRunOperator.
+
+          TRIGGER_REASON="${{ github.event.inputs.trigger_reason }}"
+          TRIGGER_SOURCE="${{ github.event.inputs.trigger_source }}"
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          RESPONSE=$(curl --silent --show-error --fail \
+            --request POST \
+            --url "${AIRFLOW_API_URL}/api/v1/dags/interview_scraping_pipeline/dagRuns" \
+            --header "Authorization: Bearer ${AIRFLOW_API_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data "{
+              \"conf\": {
+                \"trigger_reason\": \"${TRIGGER_REASON}\",
+                \"trigger_source\": \"${TRIGGER_SOURCE}\",
+                \"triggered_at\": \"${TIMESTAMP}\",
+                \"demo_mode\": \"false\"
+              }
+            }")
+
+          echo "Airflow response: $RESPONSE"
+
+          DAG_RUN_ID=$(echo "$RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin).get('dag_run_id', 'unknown'))")
+          echo "DAG run started: $DAG_RUN_ID"
+          echo "dag_run_id=$DAG_RUN_ID" >> $GITHUB_OUTPUT
+
+      - name: Post workflow summary
+        if: always()
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY <<SUMMARY
+          ## Corpus Refresh Triggered
+
+          | Field | Value |
+          |-------|-------|
+          | Trigger Reason | ${{ github.event.inputs.trigger_reason }} |
+          | Trigger Source | ${{ github.event.inputs.trigger_source }} |
+          | Airflow DAG | \`interview_scraping_pipeline\` |
+          | GitHub Run | [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
+
+          The Airflow DAG picks up from the last scrape date and runs:
+          1. Parallel scraping (GFG, LeetCode, Medium)
+          2. Preprocessing + validation
+          3. Database load
+          4. Chunking + embedding (auto-triggered via \`chunking_embedding_pipeline\`)
+          SUMMARY

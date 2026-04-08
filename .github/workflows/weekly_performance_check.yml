@@ -1,0 +1,74 @@
+# .github/workflows/weekly_performance_check.yml
+#
+# Weekly Evidently Drift Threshold Check
+# ───────────────────────────────────────
+# Runs every Monday at 10 AM UTC (1 hour after the composite drift check at 9 AM).
+# Also supports manual trigger.
+#
+# Pulls production query embeddings from the last 7 days, runs an Evidently
+# DataDriftReport on all embedding dimensions, and checks if the fraction of
+# drifted features exceeds the standalone threshold:
+#   src/evaluation/retraining_thresholds.yaml
+#     retraining_triggers.evidently_drift_pct  (default: 0.30)
+#
+# If >30% of embedding features are drifted → dispatches corpus_refresh.yml
+# to re-scrape, re-chunk, re-embed, and re-index the corpus.
+
+name: Weekly Performance Check
+
+on:
+  schedule:
+    - cron: "0 10 * * 1"    # Every Monday 10 AM UTC (after drift check at 9 AM)
+  workflow_dispatch:          # Manual trigger from GitHub UI
+    inputs:
+      dry_run:
+        description: "Dry run (compute and log metrics, but do not trigger corpus refresh)"
+        default: "false"
+        required: false
+
+jobs:
+  performance-check:
+    name: Check Retrieval Performance Degradation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: professorbot-dovbsg
+
+      - name: Run performance monitor
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          MLFLOW_TRACKING_URI: "http://${{ secrets.MLFLOW_HOST }}:5000"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: ${{ github.repository }}
+        run: |
+          DRY_RUN_FLAG=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+            echo "Running in dry-run mode (no corpus refresh will be triggered)"
+          fi
+          python -m src.monitoring.performance_monitor $DRY_RUN_FLAG
