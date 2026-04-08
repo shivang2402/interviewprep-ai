@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
 
 
@@ -9,7 +9,7 @@ class PaginationMeta(BaseModel):
 
 
 class PaginatedResponse(BaseModel):
-    data: list[Any]
+    data: List[Any]
     meta: PaginationMeta
 
 
@@ -31,7 +31,7 @@ class DocumentSummary(BaseModel):
     interview_outcome: Optional[str] = None
     difficulty: Optional[str] = None
     interview_type: Optional[str] = None
-    topics: Optional[list[str]] = None
+    topics: Optional[List[str]] = None
     num_rounds: Optional[int] = None
 
 
@@ -40,7 +40,7 @@ class DocumentDetail(DocumentSummary):
     cleaned_content: str
     processed_at: Optional[str] = None
     scrape_batch_id: Optional[str] = None
-    source_metadata: Optional[dict] = None
+    source_metadata: Optional[Dict] = None
 
 
 class DocumentChunk(BaseModel):
@@ -92,7 +92,7 @@ class StatsOverview(BaseModel):
     total_documents: int
     total_companies: int
     total_roles: int
-    platform_breakdown: list[dict]
+    platform_breakdown: List[Dict]
 
 
 class CompanyStat(BaseModel):
@@ -111,8 +111,8 @@ class OutcomeStat(BaseModel):
 
 
 class FilterOptions(BaseModel):
-    platforms: list[str]
-    companies: list[str]
-    roles: list[str]
-    difficulties: list[str]
-    outcomes: list[str]
+    platforms: List[str]
+    companies: List[str]
+    roles: List[str]
+    difficulties: List[str]
+    outcomes: List[str]

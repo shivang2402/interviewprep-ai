@@ -1,7 +1,7 @@
 import os
 import logging
 import difflib
-from typing import Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Query
 
@@ -12,8 +12,8 @@ router = APIRouter(tags=["search"])
 logger = logging.getLogger(__name__)
 
 _embedding_model = None
-_company_cache: list[str] | None = None
-_role_cache: list[str] | None = None
+_company_cache: Optional[List[str]] = None
+_role_cache: Optional[List[str]] = None
 
 EXPERIENCE_LEVELS = {
     "intern", "entry", "mid", "senior", "staff", "leadership",
@@ -48,7 +48,7 @@ def _load_caches():
     )
 
 
-def _fuzzy_match(word: str, candidates: list[str], cutoff: float = 0.6) -> str | None:
+def _fuzzy_match(word: str, candidates: List[str], cutoff: float = 0.6) -> Optional[str]:
     matches = difflib.get_close_matches(word, candidates, n=1, cutoff=cutoff)
     return matches[0] if matches else None
 
