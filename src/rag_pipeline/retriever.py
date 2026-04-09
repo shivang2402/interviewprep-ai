@@ -74,7 +74,7 @@ class HybridRetriever:
             cur.execute(query, (query_text, query_text, top_k))
             return cur.fetchall()
 
-    def _reciprocal_rank_fusion(self, vector_results, bm25_results, top_k: int) -> list[tuple]:
+    def _reciprocal_rank_fusion(self, vector_results, bm25_results, top_k: int):
         k = self.config["rrf_k"]
         w_vec = self.config["vector_weight"]
         w_bm25 = self.config["bm25_weight"]
@@ -92,9 +92,9 @@ class HybridRetriever:
             docs[doc_id] = row
 
         ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
-        return [docs[doc_id] for doc_id, _ in ranked]
+        return [(docs[doc_id], score) for doc_id, score in ranked]
 
-    def retrieve(self, query: str, top_k: int = None) -> list[dict]:
+    def retrieve(self, query: str, top_k: int = None) -> dict:
         top_k = top_k or self.config["top_k"]
         fetch_k = top_k * self.config["fetch_multiplier"]
 
@@ -103,16 +103,22 @@ class HybridRetriever:
         bm25_results = self._bm25_search(query, fetch_k)
         fused = self._reciprocal_rank_fusion(vector_results, bm25_results, top_k)
 
-        return [
+        chunks = [
             {
                 "id": row[0],
                 "text": row[1],
                 "source_url": row[2],
                 "company": row[3],
                 "role": row[4],
+                "score": round(score, 6),
             }
-            for row in fused
+            for row, score in fused
         ]
+
+        return {
+            "chunks": chunks,
+            "query_embedding": query_embedding,
+        }
 
     def close(self):
         self.conn.close()

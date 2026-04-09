@@ -4,9 +4,9 @@ Fetches the best deployed embedding model config.
 Flow:
   1. Vertex AI Model Registry → get latest model → read 'best-config' label
      (sanitized, e.g. "sentence-transformers-all-minilm-l6-v2_dim384_vector")
-  2. MLflow → find latest pipeline parent run → read 'best_config' tag/metric
-     → get the original run_name of the best child run
-  3. Search MLflow child runs by that run_name → extract 'model_name' param
+  2. MLflow → find latest pipeline parent run → read 'best_config'
+     tag/metric → find child run → extract 'model_name' param
+  3. (Fallback) Resolve model name directly from the label string
   4. Map to embedding dim + DB column via generation_config.yaml
 """
 
@@ -147,21 +147,43 @@ def _get_model_name_from_mlflow(config: dict, config_label: str) -> str:
     return model_name
 
 
+def _resolve_model_from_label(config_label: str, model_map: dict) -> str:
+    """
+    Try to resolve model name directly from the Vertex AI config label
+    without needing MLflow. The label format is typically:
+    'sentence-transformers-all-minilm-l6-v2_dim384_vector'
+    """
+    for model_name in model_map:
+        # Normalize for comparison: 'all-MiniLM-L6-v2' → 'all-minilm-l6-v2'
+        normalized = model_name.lower().replace("-", "-")
+        label_lower = config_label.lower().replace("-", "-")
+        if normalized in label_lower:
+            return model_name
+    return ""
+
+
 def get_deployed_embedding_model(config: dict) -> dict:
     """
     Full flow:
-      Vertex AI Registry → config label → MLflow parent → child run → model_name → dim/column
+      Vertex AI Registry → config label → resolve model_name → dim/column
+      Falls back to MLflow lookup if label can't be directly resolved.
     """
     model_map = config["embedding_models"]
 
     # Step 1: Get config label from Vertex AI
     config_label = _get_config_from_registry(config)
 
-    # Step 2-3: Find matching MLflow run, extract model_name
-    model_name = _get_model_name_from_mlflow(config, config_label)
+    # Step 2: Try MLflow first for full experiment tracking
+    model_name_clean = ""
+    try:
+        model_name = _get_model_name_from_mlflow(config, config_label)
+        model_name_clean = model_name.replace("sentence-transformers/", "")
+    except Exception as e:
+        print(f"MLflow lookup failed ({e}), falling back to label resolution")
 
-    # Step 4: Strip prefix and map to dim/column
-    model_name_clean = model_name.replace("sentence-transformers/", "")
+    # Step 3: Fallback — resolve directly from Vertex AI label
+    if not model_name_clean:
+        model_name_clean = _resolve_model_from_label(config_label, model_map)
 
     if model_name_clean not in model_map:
         raise ValueError(
