@@ -1,0 +1,60 @@
+services:
+  # ─────────────────────────────────────────
+  # PostgreSQL with pgvector
+  # ─────────────────────────────────────────
+  db:
+    image: pgvector/pgvector:pg15
+    environment:
+      POSTGRES_DB: interviewprep-ai-database
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: admin
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ─────────────────────────────────────────
+  # Backend — FastAPI + RAG pipeline
+  # ─────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DB_CONNECTION_MODE: tcp
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: interviewprep-ai-database
+      DB_USER: postgres
+      DB_PASSWORD: admin
+      ALLOWED_ORIGINS: http://localhost:3000
+      EMBEDDING_MODEL: all-MiniLM-L6-v2
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      USE_SECRET_MANAGER: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # ─────────────────────────────────────────
+  # Frontend — Next.js
+  # ─────────────────────────────────────────
+  frontend:
+    build:
+      context: ui/
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://backend:8000
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

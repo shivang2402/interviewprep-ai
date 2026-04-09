@@ -140,6 +140,33 @@ interviewprep-ai/
 │   │   └── test_storage_backend.py     # Tests for abstract storage classes
 │   ├── test_dag.py                     # DAG structure and task dependency tests
 │   └── test_dag_tasks.py              # DAG task helper function tests
+├── backend/                            # FastAPI backend application
+│   ├── Dockerfile                      # Multi-stage Python 3.11 build for Cloud Run
+│   ├── main.py                         # FastAPI app entrypoint
+│   ├── routers/                        # API route handlers (chat, documents, search, stats)
+│   ├── db/                             # Database connection pool and queries
+│   ├── models/                         # Pydantic response models
+│   ├── requirements.txt                # Backend-specific Python dependencies
+│   └── .env.example                    # Environment variable template
+├── ui/                                 # Next.js frontend application
+│   ├── Dockerfile                      # Multi-stage Node 20 build for Cloud Run
+│   ├── app/                            # Next.js app router pages
+│   ├── components/                     # React components (chat, layout, documents, search, stats)
+│   ├── lib/                            # API client and TypeScript types
+│   └── next.config.mjs                 # Next.js config (standalone output for Docker)
+├── terraform/                          # Infrastructure as Code (GCP)
+│   ├── main.tf                         # Provider config, API enablement
+│   ├── variables.tf                    # Configurable inputs
+│   ├── cloud_run.tf                    # Backend + Frontend Cloud Run services
+│   ├── cloud_sql.tf                    # PostgreSQL instance + database
+│   ├── iam.tf                          # Service accounts + IAM bindings
+│   ├── secret_manager.tf               # Secret Manager resources
+│   ├── artifact_registry.tf            # Docker image repository
+│   ├── compute.tf                      # Airflow + MLflow VMs
+│   ├── monitoring.tf                   # Uptime checks + alert policies
+│   └── outputs.tf                      # Service URLs, connection strings
+├── docker-compose.yml                  # Local development stack (DB + backend + frontend)
+├── .dockerignore                       # Docker build exclusions
 ├── .gitignore                          # Git ignore definitions
 ├── readme.md                           # Project documentation
 ├── requirements.txt                    # Python dependencies
@@ -233,6 +260,73 @@ For registration details, see [`model-development-readme.md` §7](docs/model-dev
 
 - **Airflow Email** — `EmailOperator` sends pipeline status reports to the team after each scraping run (`trigger_rule='all_done'`)
 - **GitHub PR Comments** — the eval CI/CD pipeline posts evaluation results as a PR comment
+
+---
+
+## 10. Deployment
+
+The application is deployed on **Google Cloud Platform** using Cloud Run for both backend and frontend, Cloud SQL for PostgreSQL + pgvector, and Artifact Registry for Docker images.
+
+### Live URLs
+
+| Service | URL |
+|---------|-----|
+| Frontend | `https://interviewprep-frontend-21181283814.us-central1.run.app` |
+| Backend API | `https://interviewprep-backend-21181283814.us-central1.run.app` |
+| Health Check | `https://interviewprep-backend-21181283814.us-central1.run.app/api/health` |
+
+### Architecture
+
+```
+GitHub Actions (CI/CD)
+    │
+    ▼
+Artifact Registry (Docker images)
+    │
+    ├──▶ Cloud Run: Backend (FastAPI + RAG)     ──▶ Cloud SQL (PostgreSQL + pgvector)
+    │       • 2 vCPU, 2Gi, min-instances=1           • HA, automated backups
+    │       • Cloud SQL Auth Proxy sidecar            • Secret Manager for credentials
+    │       • sentence-transformers pre-baked
+    │
+    ├──▶ Cloud Run: Frontend (Next.js SSR)
+    │       • 1 vCPU, 512Mi, scale-to-zero
+    │
+    ├──▶ Vertex AI Model Registry (retrieval config)
+    │
+    ├──▶ GCS: interviewprep-ai-data (raw, processed, eval)
+    │
+    └──▶ Cloud Monitoring (uptime checks + alerts)
+```
+
+### Local Development (Docker Compose)
+
+```bash
+# Set your OpenAI key
+export OPENAI_API_KEY="sk-..."
+
+# Start all services (PostgreSQL + backend + frontend)
+docker compose up --build
+
+# Frontend: http://localhost:3000
+# Backend:  http://localhost:8000
+# API docs: http://localhost:8000/docs
+```
+
+### Deploy to GCP
+
+See [`useme.md`](useme.md) for full deployment steps. The CI/CD pipeline (`.github/workflows/deploy.yml`) automates builds and deploys on push to `main`. Infrastructure can also be provisioned via Terraform in `terraform/`.
+
+---
+
+## 11. CI/CD Workflows
+
+| Workflow | Trigger | Purpose |
+|----------|---------|---------|
+| `ci.yml` | Push to `main`, PRs | Pytest with 80% coverage threshold |
+| `eval_pipeline.yml` | Config changes on `dev` | Evaluate retrieval configs → deploy best to Vertex AI |
+| `deploy.yml` | Push to `main`, manual | Build Docker images → push to Artifact Registry → deploy to Cloud Run |
+| `drift_detection.yml` | Scheduled | Monitor embedding drift via Evidently |
+| `corpus_refresh.yml` | Manual / triggered | Re-run scraping + chunking + embedding pipeline |
 
 ---
 

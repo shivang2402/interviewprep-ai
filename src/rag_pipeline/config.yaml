@@ -8,11 +8,11 @@ gcp:
   model_registry_name: "interviewprep-retrieval-model"
 
 database:
-  user: "postgres"
-  host: "34.148.0.165"
+  user: "${DB_USER:postgres}"
+  host: "${DB_HOST:127.0.0.1}"
   port: 5432
-  dbname: "interviewprep-ai-database"
-  password: "admin"
+  dbname: "${DB_NAME:interviewprep-ai-database}"
+  password: "${DB_PASSWORD}"
 
 mlflow:
   tracking_uri: "http://136.109.222.133:5000/"   # your GCE MLflow server

@@ -54,8 +54,8 @@ function renderMarkdown(text: string) {
     }
 
     // Inline URLs in the parts
-    const rendered = parts.flatMap((part, pi) => {
-      if (typeof part !== "string") return [part];
+    const rendered = parts.flatMap((part, pi): React.ReactElement[] => {
+      if (typeof part !== "string") return [part as React.ReactElement];
       const urlRegex = /(https?:\/\/[^\s)\]]+)/g;
       const urlParts = part.split(urlRegex);
       return urlParts.map((seg, si) =>
