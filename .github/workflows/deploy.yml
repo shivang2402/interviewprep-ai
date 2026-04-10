@@ -128,18 +128,7 @@ jobs:
             --region ${{ env.GCP_REGION }} \
             --platform managed \
             --add-cloudsql-instances ${{ secrets.CLOUD_SQL_INSTANCE }} \
-            --set-env-vars "\
-              DB_CONNECTION_MODE=socket,\
-              CLOUD_SQL_INSTANCE_CONNECTION_NAME=${{ secrets.CLOUD_SQL_INSTANCE }},\
-              DB_NAME=${{ secrets.DB_NAME }},\
-              DB_USER=${{ secrets.DB_USER }},\
-              DB_PASSWORD=${{ secrets.DB_PASSWORD }},\
-              USE_SECRET_MANAGER=false,\
-              GCP_PROJECT_ID=${{ env.GCP_PROJECT_ID }},\
-              EMBEDDING_MODEL=all-MiniLM-L6-v2,\
-              ALLOWED_ORIGINS=${{ secrets.FRONTEND_SERVICE_URL }},\
-              OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }},\
-              MLFLOW_HOST=${{ secrets.MLFLOW_HOST }}" \
+            --set-env-vars "DB_CONNECTION_MODE=socket,CLOUD_SQL_INSTANCE_CONNECTION_NAME=${{ secrets.CLOUD_SQL_INSTANCE }},DB_NAME=${{ secrets.DB_NAME }},DB_USER=${{ secrets.DB_USER }},DB_PASSWORD=${{ secrets.DB_PASSWORD }},USE_SECRET_MANAGER=false,GCP_PROJECT_ID=${{ env.GCP_PROJECT_ID }},EMBEDDING_MODEL=all-MiniLM-L6-v2,ALLOWED_ORIGINS=${{ secrets.FRONTEND_SERVICE_URL }},OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }},MLFLOW_HOST=${{ secrets.MLFLOW_HOST }}" \
             --memory 2Gi \
             --cpu 2 \
             --min-instances 1 \
