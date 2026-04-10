@@ -127,7 +127,6 @@ jobs:
             --image ${{ env.BACKEND_IMAGE }}:${{ needs.build-backend.outputs.image_tag }} \
             --region ${{ env.GCP_REGION }} \
             --platform managed \
-            --service-account ${{ secrets.BACKEND_SA_EMAIL }} \
             --add-cloudsql-instances ${{ secrets.CLOUD_SQL_INSTANCE }} \
             --set-env-vars "\
               DB_CONNECTION_MODE=socket,\
