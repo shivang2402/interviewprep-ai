@@ -2,7 +2,7 @@
 #
 # Build & Deploy to GCP Cloud Run
 # ────────────────────────────────
-# Triggered on push to main branch.
+# Triggered on push to dev branch.
 # Builds Docker images for backend and frontend, pushes to Artifact Registry,
 # and deploys to Cloud Run.
 
@@ -10,7 +10,7 @@ name: Build & Deploy to Cloud Run
 
 on:
   push:
-    branches: [main]
+    branches: [dev]
   workflow_dispatch:
 
 env:
