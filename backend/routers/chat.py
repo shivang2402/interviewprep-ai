@@ -23,13 +23,20 @@ def set_generator(generator):
 
 def _get_log_connection():
     """Get a DB connection for logging using env vars."""
-    return psycopg2.connect(
-        host=os.getenv("DB_HOST", "127.0.0.1"),
-        port=int(os.getenv("DB_PORT", "5432")),
-        dbname=os.getenv("DB_NAME", "interviewprep-ai-database"),
-        user=os.getenv("DB_USER", "postgres"),
-        password=os.getenv("DB_PASSWORD", ""),
-    )
+    params = {
+        "dbname": os.getenv("DB_NAME", "interviewprep-ai-database"),
+        "user": os.getenv("DB_USER", "postgres"),
+        "password": os.getenv("DB_PASSWORD", ""),
+    }
+
+    if os.getenv("DB_CONNECTION_MODE") == "socket":
+        instance = os.getenv("CLOUD_SQL_INSTANCE_CONNECTION_NAME", "")
+        params["host"] = f"/cloudsql/{instance}"
+    else:
+        params["host"] = os.getenv("DB_HOST", "127.0.0.1")
+        params["port"] = int(os.getenv("DB_PORT", "5432"))
+
+    return psycopg2.connect(**params)
 
 
 CREATE_LOG_TABLE = """
