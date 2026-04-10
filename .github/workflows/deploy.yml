@@ -139,7 +139,7 @@ jobs:
               EMBEDDING_MODEL=all-MiniLM-L6-v2,\
               ALLOWED_ORIGINS=${{ secrets.FRONTEND_SERVICE_URL }},\
               OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }},\
-              MLFLOW_TRACKING_URI=${{ secrets.MLFLOW_TRACKING_URI }}" \
+              MLFLOW_HOST=${{ secrets.MLFLOW_HOST }}" \
             --memory 2Gi \
             --cpu 2 \
             --min-instances 1 \
