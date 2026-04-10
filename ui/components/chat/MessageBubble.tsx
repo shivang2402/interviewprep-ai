@@ -161,11 +161,6 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
               minute: "2-digit",
             })}
           </span>
-          {message.latency_ms && (
-            <span className="text-[10px] text-slate-400 bg-slate-50 rounded px-1.5 py-0.5">
-              {(message.latency_ms / 1000).toFixed(1)}s
-            </span>
-          )}
         </div>
       </div>
     </div>
