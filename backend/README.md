@@ -110,6 +110,40 @@ The backend connects to the same PostgreSQL database (Cloud SQL) used by the dat
 
 When `USE_SECRET_MANAGER=true`, DB credentials are pulled from GCP Secret Manager instead of environment variables.
 
+## Docker
+
+Build and run the backend as a Docker container:
+
+```bash
+# From repo root (backend Dockerfile uses repo root as build context)
+docker build -f backend/Dockerfile -t interviewprep-backend .
+
+# Run with required env vars
+docker run -p 8000:8000 \
+  -e DB_HOST=host.docker.internal \
+  -e DB_PORT=5432 \
+  -e DB_NAME=interviewprep-ai-database \
+  -e DB_USER=postgres \
+  -e DB_PASSWORD=admin \
+  -e OPENAI_API_KEY=sk-... \
+  -e EMBEDDING_MODEL=all-MiniLM-L6-v2 \
+  -e ALLOWED_ORIGINS=http://localhost:3000 \
+  interviewprep-backend
+```
+
+The Dockerfile pre-downloads the `sentence-transformers/all-MiniLM-L6-v2` model at build time and sets `HF_HUB_OFFLINE=1` so no HuggingFace calls happen at runtime.
+
+## Cloud Run Deployment
+
+The backend runs on Cloud Run with a Cloud SQL Auth Proxy sidecar for database access:
+
+- **Memory:** 2Gi (sentence-transformers model loading + embedding inference)
+- **CPU:** 2 vCPU
+- **Min instances:** 1 (avoids cold starts for model loading)
+- **Connection mode:** Unix socket via `DB_CONNECTION_MODE=socket`
+
+The CI/CD pipeline (`.github/workflows/deploy.yml`) automates builds and deploys on push to `main`.
+
 ## Tables Used
 
 - `processed_documents` — Main document content and metadata

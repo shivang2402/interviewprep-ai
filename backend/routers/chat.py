@@ -24,11 +24,11 @@ def set_generator(generator):
 def _get_log_connection():
     """Get a DB connection for logging using env vars."""
     return psycopg2.connect(
-        host=os.getenv("DB_HOST", "34.148.0.165"),
+        host=os.getenv("DB_HOST", "127.0.0.1"),
         port=int(os.getenv("DB_PORT", "5432")),
         dbname=os.getenv("DB_NAME", "interviewprep-ai-database"),
         user=os.getenv("DB_USER", "postgres"),
-        password=os.getenv("DB_PASSWORD", "admin"),
+        password=os.getenv("DB_PASSWORD", ""),
     )
 
 

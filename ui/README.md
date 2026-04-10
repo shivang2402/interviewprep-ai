@@ -71,6 +71,40 @@ ui/
 
    The app runs at `http://localhost:3000`.
 
+## Docker
+
+Build and run the frontend as a Docker container:
+
+```bash
+# From the ui/ directory
+docker build \
+  --build-arg NEXT_PUBLIC_API_BASE_URL=http://localhost:8000 \
+  -t interviewprep-frontend .
+
+docker run -p 3000:3000 interviewprep-frontend
+```
+
+**Important:** `NEXT_PUBLIC_API_BASE_URL` must be passed as a **build arg**, not a runtime env var. Next.js inlines `NEXT_PUBLIC_*` variables into the client JavaScript bundle at build time. Setting it via `docker run -e` has no effect on browser-side code.
+
+The Dockerfile uses `output: "standalone"` (configured in `next.config.mjs`) to produce a self-contained Node.js server without `node_modules`.
+
+## Cloud Run Deployment
+
+The frontend runs on Cloud Run:
+
+- **Memory:** 512Mi
+- **CPU:** 1 vCPU
+- **Min instances:** 0 (scales to zero when idle)
+
+When deploying, rebuild the image with the backend's Cloud Run URL:
+
+```bash
+docker buildx build --platform linux/amd64 \
+  --build-arg NEXT_PUBLIC_API_BASE_URL=https://<BACKEND_CLOUD_RUN_URL> \
+  -t us-central1-docker.pkg.dev/professorbot-dovbsg/interviewprep-ai/frontend:latest \
+  --push .
+```
+
 ## Backend Connection
 
 All data is fetched from the FastAPI backend via the `NEXT_PUBLIC_API_BASE_URL` environment variable. The UI makes no direct database connections. The backend must be running for the UI to display data.

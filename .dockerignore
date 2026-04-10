@@ -1,0 +1,37 @@
+.git
+.github
+.vscode
+.idea
+.DS_Store
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.venv
+venv
+dist
+build
+.pytest_cache
+.coverage
+htmlcov
+
+# Node
+ui/node_modules
+ui/.next
+
+# Docs and tests
+docs
+test
+*.md
+!requirements*.txt
+
+# Terraform
+terraform/.terraform
+terraform/*.tfstate*
+
+# Environment
+.env
+.env.*
+CLAUDE.md
