@@ -31,6 +31,8 @@ graph LR
 ```
 ![Pipeline DAG](dag.jpeg)
 
+![Data Pipeline Architecture](../diagrams/02_data_pipeline.png)
+
 ### Task Details
 
 | Task ID | Operator | What It Does |

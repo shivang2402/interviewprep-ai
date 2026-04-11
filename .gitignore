@@ -27,5 +27,8 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Generated
+generate_diagrams.py
+
 # Claude
 CLAUDE.md
