@@ -4,6 +4,8 @@
 
 InterviewPrep-AI is an end-to-end data engineering and RAG (Retrieval-Augmented Generation) pipeline that scrapes interview experiences from three major platforms — **GeeksforGeeks**, **LeetCode**, and **Medium** — preprocesses the raw data through a multi-step transformation pipeline, validates output integrity, and loads the cleaned documents into a PostgreSQL database. The documents are then chunked, embedded, and indexed for retrieval, powering a RAG system that generates context-aware answers to interview preparation queries. The whole thing is orchestrated by **Apache Airflow**, with raw and processed artifacts stored in **Google Cloud Storage (GCS)**. After every run, the team gets an email report with the full pipeline status.
 
+![System Architecture](diagrams/01_system_architecture.png)
+
 ---
 
 ## 2. Folder Structure
@@ -197,6 +199,8 @@ The RAG pipeline transforms raw scraped documents into a queryable knowledge bas
 
 The chunking and embedding stages are orchestrated as an Airflow DAG (`dags/chunking_embedding_pipeline.py`) that runs after the scraping/preprocessing pipeline completes.
 
+![RAG Pipeline](diagrams/03_rag_pipeline.png)
+
 ### Evaluation Dataset
 
 The evaluation pipeline loads its data directly from the PostgreSQL database populated by the data pipeline. `EvalDatasetLoader` queries the `eval_dataset` table, which contains human-labeled relevance judgments (graded 0/1/2) linking eval queries to document chunks. The eval dataset is constructed using `dataset_generator.py` (which pools retrieval results from all three strategies) and `llm_relevance_judge.py` (which uses an LLM-as-a-judge approach via OpenAI to grade relevance).
@@ -212,6 +216,8 @@ For strategy details, RRF formula, and selection score weights, see [`model-deve
 ## 4. Model Validation
 
 `MetricsCalculator` computes standard retrieval metrics — **MRR@k**, **Recall@k**, **Precision@k**, and **NDCG@k** — at k = 5, 10, and 15 against the graded eval dataset. Per-query detail and score distributions by relevance grade are logged as MLflow artifacts.
+
+![Evaluation Pipeline](diagrams/05_eval_pipeline.png)
 
 For metric formulas and additional measures (score separation, storage footprint), see [`model-development-readme.md` §5](docs/model-development-readme.md#5-retrieval-model-evaluation).
 
@@ -277,26 +283,7 @@ The application is deployed on **Google Cloud Platform** using Cloud Run for bot
 
 ### Architecture
 
-```
-GitHub Actions (CI/CD)
-    │
-    ▼
-Artifact Registry (Docker images)
-    │
-    ├──▶ Cloud Run: Backend (FastAPI + RAG)     ──▶ Cloud SQL (PostgreSQL + pgvector)
-    │       • 2 vCPU, 2Gi, min-instances=1           • HA, automated backups
-    │       • Cloud SQL Auth Proxy sidecar            • Secret Manager for credentials
-    │       • sentence-transformers pre-baked
-    │
-    ├──▶ Cloud Run: Frontend (Next.js SSR)
-    │       • 1 vCPU, 512Mi, scale-to-zero
-    │
-    ├──▶ Vertex AI Model Registry (retrieval config)
-    │
-    ├──▶ GCS: interviewprep-ai-data (raw, processed, eval)
-    │
-    └──▶ Cloud Monitoring (uptime checks + alerts)
-```
+![GCP Deployment Architecture](diagrams/04_deployment_architecture.png)
 
 ### Local Development (Docker Compose)
 

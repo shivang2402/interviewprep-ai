@@ -35,6 +35,8 @@ graph LR
 - **Demo mode** — Both tasks support a `DEMO_MODE` Airflow variable. When enabled, the pipelines limit processing to 10 documents for quick validation.
 - **Sequential execution** — Chunking must complete before embedding generation, since embeddings operate on the chunks produced by the chunking step.
 
+![Evaluation Pipeline](../diagrams/05_eval_pipeline.png)
+
 ---
 
 ## 2. Document Chunking
