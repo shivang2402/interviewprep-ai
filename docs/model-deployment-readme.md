@@ -279,22 +279,3 @@ src/evaluation/
   retraining_thresholds.yaml              # 3 % / 30 % thresholds
   retrieval_model_configs.yaml            # model configs → Vertex AI
 ```
-
----
-
-## 9. Mapping to the Submission Guidelines
-
-| Guideline | Covered by |
-|---|---|
-| §2 Cloud vs. Edge (specify provider / service) | §1 above — GCP Cloud Run + Vertex AI |
-| §3.1 Deployment Service | §2 — Cloud Run config, Vertex AI Model Registry |
-| §3.2 Deployment Automation (Terraform / CI/CD) | §3 — `terraform/`, `deploy.yml`, `eval_pipeline.yml` |
-| §3.3 Repo → Deployment connection | §4 — GitHub Actions on push / dispatch |
-| §3.4 Replication steps | §5 — fresh-environment walkthrough |
-| §5.1 Model decay / data shift monitoring | §6.1, §6.2 — Cloud Monitoring + MLflow + Evidently |
-| §5.2 Data-shift detection | §6.2 — Evidently + centroid + per-dim p95 |
-| §5.3 Retraining thresholds | §6.3 — `retraining_thresholds.yaml` |
-| §5.4 Automated retraining pipeline | §6.4 — `corpus_refresh.yml` + regression gate |
-| §5.5 Notifications | §6.5 — Slack + SMTP in `corpus_refresh.yml` |
-| §6 Code submission (scripts, env config, logs) | §3, §7, §8 — workflows, Dockerfiles, compose, Terraform |
-| §7 Video submission | Separate deliverable — fresh-env walkthrough following §5 |
