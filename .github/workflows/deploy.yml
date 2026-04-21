@@ -1,0 +1,217 @@
+# .github/workflows/deploy.yml
+#
+# Build & Deploy to GCP Cloud Run
+# ────────────────────────────────
+# Triggered on push to dev branch.
+# Builds Docker images for backend and frontend, pushes to Artifact Registry,
+# and deploys to Cloud Run.
+
+name: Build & Deploy to Cloud Run
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+env:
+  GCP_PROJECT_ID: professorbot-dovbsg
+  GCP_REGION: us-central1
+  AR_REPO: interviewprep-ai
+  BACKEND_SERVICE: interviewprep-backend
+  FRONTEND_SERVICE: interviewprep-frontend
+  BACKEND_IMAGE: us-central1-docker.pkg.dev/professorbot-dovbsg/interviewprep-ai/backend
+  FRONTEND_IMAGE: us-central1-docker.pkg.dev/professorbot-dovbsg/interviewprep-ai/frontend
+
+jobs:
+  # ─────────────────────────────────────────────
+  # Job 1: Build & push backend image
+  # ─────────────────────────────────────────────
+  build-backend:
+    name: Build Backend Image
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Set image tag
+        id: meta
+        run: echo "tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      - name: Build and push backend image
+        run: |
+          docker build \
+            -f backend/Dockerfile \
+            -t ${{ env.BACKEND_IMAGE }}:${{ steps.meta.outputs.tag }} \
+            -t ${{ env.BACKEND_IMAGE }}:latest \
+            .
+          docker push ${{ env.BACKEND_IMAGE }}:${{ steps.meta.outputs.tag }}
+          docker push ${{ env.BACKEND_IMAGE }}:latest
+
+  # ─────────────────────────────────────────────
+  # Job 2: Build & push frontend image
+  # ─────────────────────────────────────────────
+  build-frontend:
+    name: Build Frontend Image
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Set image tag
+        id: meta
+        run: echo "tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      - name: Build and push frontend image
+        run: |
+          docker build \
+            -f ui/Dockerfile \
+            -t ${{ env.FRONTEND_IMAGE }}:${{ steps.meta.outputs.tag }} \
+            -t ${{ env.FRONTEND_IMAGE }}:latest \
+            --build-arg NEXT_PUBLIC_API_BASE_URL=${{ secrets.BACKEND_SERVICE_URL }} \
+            ui/
+          docker push ${{ env.FRONTEND_IMAGE }}:${{ steps.meta.outputs.tag }}
+          docker push ${{ env.FRONTEND_IMAGE }}:latest
+
+  # ─────────────────────────────────────────────
+  # Job 3: Deploy backend to Cloud Run
+  # ─────────────────────────────────────────────
+  deploy-backend:
+    name: Deploy Backend
+    needs: build-backend
+    runs-on: ubuntu-latest
+    outputs:
+      service_url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Deploy to Cloud Run
+        id: deploy
+        run: |
+          gcloud run deploy ${{ env.BACKEND_SERVICE }} \
+            --image ${{ env.BACKEND_IMAGE }}:${{ needs.build-backend.outputs.image_tag }} \
+            --region ${{ env.GCP_REGION }} \
+            --platform managed \
+            --add-cloudsql-instances professorbot-dovbsg:us-east1:interviewprep-ai-db \
+            --set-env-vars "DB_CONNECTION_MODE=socket,CLOUD_SQL_INSTANCE_CONNECTION_NAME=professorbot-dovbsg:us-east1:interviewprep-ai-db,DB_NAME=${{ secrets.DB_NAME }},DB_USER=${{ secrets.DB_USER }},DB_PASSWORD=${{ secrets.DB_PASSWORD }},USE_SECRET_MANAGER=false,GCP_PROJECT_ID=${{ env.GCP_PROJECT_ID }},EMBEDDING_MODEL=all-MiniLM-L6-v2,ALLOWED_ORIGINS=${{ secrets.FRONTEND_SERVICE_URL }},OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }},MLFLOW_HOST=${{ secrets.MLFLOW_HOST }}" \
+            --memory 2Gi \
+            --cpu 2 \
+            --min-instances 1 \
+            --max-instances 10 \
+            --timeout 300 \
+            --concurrency 80 \
+            --port 8000 \
+            --allow-unauthenticated \
+            --quiet
+
+          URL=$(gcloud run services describe ${{ env.BACKEND_SERVICE }} \
+            --region ${{ env.GCP_REGION }} \
+            --format 'value(status.url)')
+          echo "url=$URL" >> $GITHUB_OUTPUT
+          echo "Backend deployed to: $URL"
+
+      - name: Verify health
+        run: |
+          sleep 10
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            "${{ steps.deploy.outputs.url }}/api/health")
+          if [ "$STATUS" -ne 200 ]; then
+            echo "Health check failed with status $STATUS"
+            exit 1
+          fi
+          echo "Health check passed"
+
+  # ─────────────────────────────────────────────
+  # Job 4: Deploy frontend to Cloud Run
+  # ─────────────────────────────────────────────
+  deploy-frontend:
+    name: Deploy Frontend
+    needs: [build-frontend, deploy-backend]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Deploy to Cloud Run
+        id: deploy
+        run: |
+          gcloud run deploy ${{ env.FRONTEND_SERVICE }} \
+            --image ${{ env.FRONTEND_IMAGE }}:${{ needs.build-frontend.outputs.image_tag }} \
+            --region ${{ env.GCP_REGION }} \
+            --platform managed \
+            --set-env-vars "NEXT_PUBLIC_API_BASE_URL=${{ needs.deploy-backend.outputs.service_url }}" \
+            --memory 512Mi \
+            --cpu 1 \
+            --min-instances 0 \
+            --max-instances 5 \
+            --port 3000 \
+            --allow-unauthenticated \
+            --quiet
+
+          URL=$(gcloud run services describe ${{ env.FRONTEND_SERVICE }} \
+            --region ${{ env.GCP_REGION }} \
+            --format 'value(status.url)')
+          echo "Frontend deployed to: $URL"
+
+  # ─────────────────────────────────────────────
+  # Job 5: Post deployment summary
+  # ─────────────────────────────────────────────
+  notify:
+    name: Deployment Summary
+    needs: [deploy-backend, deploy-frontend]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summary
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Backend | ${{ needs.deploy-backend.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Frontend | ${{ needs.deploy-frontend.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Backend URL:** ${{ needs.deploy-backend.outputs.service_url }}" >> $GITHUB_STEP_SUMMARY

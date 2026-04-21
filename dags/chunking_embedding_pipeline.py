@@ -1,6 +1,7 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
+from airflow.operators.email import EmailOperator
 from airflow.models import Variable
 from datetime import datetime, timedelta
 import logging
@@ -14,6 +15,15 @@ from src.chunking import pipeline as chunking_pipeline_mod
 from src.embeddings import pipeline as embeddings_pipeline_mod
 
 logger = logging.getLogger("interviewprep.chunking_embedding_dag")
+
+NOTIFY_EMAILS = [
+    'kansara.dh@northeastern.edu',
+    'lnu.prat@northeastern.edu',
+    'patel.shivangm@northeastern.edu',
+    'kanani.h@northeastern.edu',
+    'shah.shreyc@northeastern.edu',
+    'parikh.malh@northeastern.edu',
+]
 
 
 def _safe_variable_get(key, default):
@@ -92,6 +102,54 @@ def embeddings_task(**kwargs):
     logger.info("Embeddings pipeline completed.")
 
 
+def build_email_body(**kwargs):
+    """Build HTML email body reporting chunking and embedding task outcomes."""
+    ti = kwargs['ti']
+    dag_run = kwargs['dag_run']
+
+    failed_tasks = [
+        t.task_id for t in dag_run.get_task_instances()
+        if t.state == 'failed'
+    ]
+    status = 'FAILED' if failed_tasks else 'SUCCESS'
+
+    chunks_created = ti.xcom_pull(task_ids='run_chunking', key='chunks_created') or 'N/A'
+    embeddings_generated = ti.xcom_pull(task_ids='run_embeddings', key='embeddings_generated') or 'N/A'
+
+    body = f"""
+    <h2>InterviewPrep Chunking &amp; Embedding Pipeline — {status}</h2>
+    <p><b>Run Date:</b> {kwargs.get('logical_date', 'N/A')}</p>
+
+    <h3>Results</h3>
+    <table border="1" cellpadding="5" cellspacing="0">
+        <tr><th>Stage</th><th>Outcome</th><th>Count</th></tr>
+        <tr>
+            <td>Chunking</td>
+            <td>{'FAILED' if 'run_chunking' in failed_tasks else 'SUCCESS'}</td>
+            <td>{chunks_created}</td>
+        </tr>
+        <tr>
+            <td>Embeddings</td>
+            <td>{'FAILED' if 'run_embeddings' in failed_tasks else 'SUCCESS'}</td>
+            <td>{embeddings_generated}</td>
+        </tr>
+    </table>
+    """
+
+    if failed_tasks:
+        body += f"""
+    <h3 style="color:red;">Failed Tasks</h3>
+    <ul>{''.join(f'<li>{t}</li>' for t in failed_tasks)}</ul>
+    """
+
+    body += "<p>— InterviewPrep Airflow Pipeline</p>"
+
+    subject = f"[InterviewPrep] Chunking & Embedding {status} — {kwargs.get('logical_date', '')}"
+    ti.xcom_push(key='email_subject', value=subject)
+    ti.xcom_push(key='email_body', value=body)
+    return body
+
+
 default_args = {
     'owner': 'admin',
     'depends_on_past': False,
@@ -139,4 +197,21 @@ complete = BashOperator(
     dag=dag,
 )
 
-start >> run_chunking >> run_embeddings >> complete
+build_email = PythonOperator(
+    task_id='build_email',
+    python_callable=build_email_body,
+    execution_timeout=timedelta(minutes=5),
+    trigger_rule='all_done',
+    dag=dag,
+)
+
+send_email = EmailOperator(
+    task_id='send_notification_email',
+    to=NOTIFY_EMAILS,
+    subject="{{ ti.xcom_pull(task_ids='build_email', key='email_subject') }}",
+    html_content="{{ ti.xcom_pull(task_ids='build_email', key='email_body') }}",
+    trigger_rule='all_done',
+    dag=dag,
+)
+
+start >> run_chunking >> run_embeddings >> complete >> build_email >> send_email

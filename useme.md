@@ -171,3 +171,142 @@ pytest test/ --cov=src --cov-report=term-missing
 # Run tests matching a pattern
 pytest test/ -k "test_exact_duplicate" -v
 ```
+
+---
+
+## 6. Local Development with Docker Compose
+
+If you don't want to set up PostgreSQL and all dependencies locally, use Docker Compose. It spins up the full stack: PostgreSQL (with pgvector), the FastAPI backend, and the Next.js frontend.
+
+```bash
+# 1. Set your OpenAI key
+export OPENAI_API_KEY="sk-..."
+
+# 2. Start all services
+docker compose up --build
+
+# 3. Access the app
+# Frontend: http://localhost:3000
+# Backend:  http://localhost:8000
+# API docs: http://localhost:8000/docs
+# PostgreSQL: localhost:5432 (user: postgres, password: admin)
+
+# 4. Stop everything
+docker compose down
+
+# 5. Stop and wipe the database volume
+docker compose down -v
+```
+
+The backend connects to the local PostgreSQL container, not Cloud SQL. The `sentence-transformers` model is pre-baked into the Docker image so there's no download at startup.
+
+---
+
+## 7. Deploying to GCP (Cloud Run)
+
+### Prerequisites
+
+- GCP project with billing enabled
+- `gcloud` CLI authenticated (`gcloud auth login`)
+- Docker with buildx support
+- APIs enabled: Cloud Run, Artifact Registry, Cloud SQL, Secret Manager
+
+### Step 1: Build and push images
+
+```bash
+# Authenticate Docker to Artifact Registry
+gcloud auth configure-docker us-central1-docker.pkg.dev
+
+# Build backend (from repo root)
+docker buildx build --platform linux/amd64 \
+  -f backend/Dockerfile \
+  -t us-central1-docker.pkg.dev/professorbot-dovbsg/interviewprep-ai/backend:latest \
+  --push .
+
+# Build frontend (pass backend URL as build arg — NEXT_PUBLIC_* vars are baked at build time)
+docker buildx build --platform linux/amd64 \
+  -f ui/Dockerfile \
+  --build-arg NEXT_PUBLIC_API_BASE_URL=https://<BACKEND_CLOUD_RUN_URL> \
+  -t us-central1-docker.pkg.dev/professorbot-dovbsg/interviewprep-ai/frontend:latest \
+  --push ui/
+```
+
+**Important:** `NEXT_PUBLIC_API_BASE_URL` must be set at **build time** because Next.js inlines it into the client JavaScript bundle. Setting it as a Cloud Run runtime env var has no effect on browser-side code.
+
+### Step 2: Deploy backend
+
+```bash
+gcloud run deploy interviewprep-backend \
+  --image us-central1-docker.pkg.dev/professorbot-dovbsg/interviewprep-ai/backend:latest \
+  --region us-central1 \
+  --add-cloudsql-instances professorbot-dovbsg:us-central1:interviewprep-ai-db \
+  --set-env-vars "DB_CONNECTION_MODE=socket,\
+    CLOUD_SQL_INSTANCE_CONNECTION_NAME=professorbot-dovbsg:us-central1:interviewprep-ai-db,\
+    DB_NAME=interviewprep-ai-database,\
+    DB_USER=postgres,\
+    DB_PASSWORD=<your-password>,\
+    OPENAI_API_KEY=<your-key>,\
+    EMBEDDING_MODEL=all-MiniLM-L6-v2,\
+    ALLOWED_ORIGINS=https://<FRONTEND_CLOUD_RUN_URL>" \
+  --memory 2Gi --cpu 2 \
+  --min-instances 1 --max-instances 10 \
+  --port 8000 --allow-unauthenticated
+```
+
+### Step 3: Deploy frontend
+
+```bash
+gcloud run deploy interviewprep-frontend \
+  --image us-central1-docker.pkg.dev/professorbot-dovbsg/interviewprep-ai/frontend:latest \
+  --region us-central1 \
+  --memory 512Mi --cpu 1 \
+  --min-instances 0 --max-instances 5 \
+  --port 3000 --allow-unauthenticated
+```
+
+### Step 4: Verify
+
+```bash
+# Backend health
+curl https://<BACKEND_URL>/api/health
+
+# Should return: {"status":"ok","rag_ready":true,...}
+```
+
+### CI/CD (Automated)
+
+Push to `main` triggers `.github/workflows/deploy.yml` which builds, pushes, and deploys both services automatically. Required GitHub Secrets:
+
+| Secret | Value |
+|--------|-------|
+| `GCP_SA_KEY` | Service account JSON key |
+| `CLOUD_SQL_INSTANCE` | `professorbot-dovbsg:us-central1:interviewprep-ai-db` |
+| `DB_NAME` | `interviewprep-ai-database` |
+| `DB_USER` | `postgres` |
+| `DB_PASSWORD` | Database password |
+| `OPENAI_API_KEY` | OpenAI API key |
+| `BACKEND_SERVICE_URL` | Backend Cloud Run URL |
+| `FRONTEND_SERVICE_URL` | Frontend Cloud Run URL |
+| `MLFLOW_TRACKING_URI` | MLflow server URL |
+| `BACKEND_SA_EMAIL` | Backend service account email |
+
+---
+
+## 8. Infrastructure as Code (Terraform)
+
+All GCP resources can be provisioned via Terraform in `terraform/`.
+
+```bash
+cd terraform
+
+# Copy and fill in variables
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars with your values
+
+# Initialize and apply
+terraform init
+terraform plan
+terraform apply
+```
+
+This creates: Cloud Run services, Cloud SQL instance, Artifact Registry, service accounts, IAM bindings, Secret Manager secrets, and monitoring alerts.

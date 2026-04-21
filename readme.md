@@ -4,6 +4,8 @@
 
 InterviewPrep-AI is an end-to-end data engineering and RAG (Retrieval-Augmented Generation) pipeline that scrapes interview experiences from three major platforms — **GeeksforGeeks**, **LeetCode**, and **Medium** — preprocesses the raw data through a multi-step transformation pipeline, validates output integrity, and loads the cleaned documents into a PostgreSQL database. The documents are then chunked, embedded, and indexed for retrieval, powering a RAG system that generates context-aware answers to interview preparation queries. The whole thing is orchestrated by **Apache Airflow**, with raw and processed artifacts stored in **Google Cloud Storage (GCS)**. After every run, the team gets an email report with the full pipeline status.
 
+![System Architecture](diagrams/01_system_architecture.png)
+
 ---
 
 ## 2. Folder Structure
@@ -140,6 +142,33 @@ interviewprep-ai/
 │   │   └── test_storage_backend.py     # Tests for abstract storage classes
 │   ├── test_dag.py                     # DAG structure and task dependency tests
 │   └── test_dag_tasks.py              # DAG task helper function tests
+├── backend/                            # FastAPI backend application
+│   ├── Dockerfile                      # Multi-stage Python 3.11 build for Cloud Run
+│   ├── main.py                         # FastAPI app entrypoint
+│   ├── routers/                        # API route handlers (chat, documents, search, stats)
+│   ├── db/                             # Database connection pool and queries
+│   ├── models/                         # Pydantic response models
+│   ├── requirements.txt                # Backend-specific Python dependencies
+│   └── .env.example                    # Environment variable template
+├── ui/                                 # Next.js frontend application
+│   ├── Dockerfile                      # Multi-stage Node 20 build for Cloud Run
+│   ├── app/                            # Next.js app router pages
+│   ├── components/                     # React components (chat, layout, documents, search, stats)
+│   ├── lib/                            # API client and TypeScript types
+│   └── next.config.mjs                 # Next.js config (standalone output for Docker)
+├── terraform/                          # Infrastructure as Code (GCP)
+│   ├── main.tf                         # Provider config, API enablement
+│   ├── variables.tf                    # Configurable inputs
+│   ├── cloud_run.tf                    # Backend + Frontend Cloud Run services
+│   ├── cloud_sql.tf                    # PostgreSQL instance + database
+│   ├── iam.tf                          # Service accounts + IAM bindings
+│   ├── secret_manager.tf               # Secret Manager resources
+│   ├── artifact_registry.tf            # Docker image repository
+│   ├── compute.tf                      # Airflow + MLflow VMs
+│   ├── monitoring.tf                   # Uptime checks + alert policies
+│   └── outputs.tf                      # Service URLs, connection strings
+├── docker-compose.yml                  # Local development stack (DB + backend + frontend)
+├── .dockerignore                       # Docker build exclusions
 ├── .gitignore                          # Git ignore definitions
 ├── readme.md                           # Project documentation
 ├── requirements.txt                    # Python dependencies
@@ -170,6 +199,8 @@ The RAG pipeline transforms raw scraped documents into a queryable knowledge bas
 
 The chunking and embedding stages are orchestrated as an Airflow DAG (`dags/chunking_embedding_pipeline.py`) that runs after the scraping/preprocessing pipeline completes.
 
+![RAG Pipeline](diagrams/03_rag_pipeline.png)
+
 ### Evaluation Dataset
 
 The evaluation pipeline loads its data directly from the PostgreSQL database populated by the data pipeline. `EvalDatasetLoader` queries the `eval_dataset` table, which contains human-labeled relevance judgments (graded 0/1/2) linking eval queries to document chunks. The eval dataset is constructed using `dataset_generator.py` (which pools retrieval results from all three strategies) and `llm_relevance_judge.py` (which uses an LLM-as-a-judge approach via OpenAI to grade relevance).
@@ -185,6 +216,8 @@ For strategy details, RRF formula, and selection score weights, see [`model-deve
 ## 4. Model Validation
 
 `MetricsCalculator` computes standard retrieval metrics — **MRR@k**, **Recall@k**, **Precision@k**, and **NDCG@k** — at k = 5, 10, and 15 against the graded eval dataset. Per-query detail and score distributions by relevance grade are logged as MLflow artifacts.
+
+![Evaluation Pipeline](diagrams/05_eval_pipeline.png)
 
 For metric formulas and additional measures (score separation, storage footprint), see [`model-development-readme.md` §5](docs/model-development-readme.md#5-retrieval-model-evaluation).
 
@@ -233,6 +266,54 @@ For registration details, see [`model-development-readme.md` §7](docs/model-dev
 
 - **Airflow Email** — `EmailOperator` sends pipeline status reports to the team after each scraping run (`trigger_rule='all_done'`)
 - **GitHub PR Comments** — the eval CI/CD pipeline posts evaluation results as a PR comment
+
+---
+
+## 10. Deployment
+
+The application is deployed on **Google Cloud Platform** using Cloud Run for both backend and frontend, Cloud SQL for PostgreSQL + pgvector, and Artifact Registry for Docker images.
+
+### Live URLs
+
+| Service | URL |
+|---------|-----|
+| Frontend | `https://interviewprep-frontend-21181283814.us-central1.run.app` |
+| Backend API | `https://interviewprep-backend-21181283814.us-central1.run.app` |
+| Health Check | `https://interviewprep-backend-21181283814.us-central1.run.app/api/health` |
+
+### Architecture
+
+![GCP Deployment Architecture](diagrams/04_deployment_architecture.png)
+
+### Local Development (Docker Compose)
+
+```bash
+# Set your OpenAI key
+export OPENAI_API_KEY="sk-..."
+
+# Start all services (PostgreSQL + backend + frontend)
+docker compose up --build
+
+# Frontend: http://localhost:3000
+# Backend:  http://localhost:8000
+# API docs: http://localhost:8000/docs
+```
+
+### Deploy to GCP
+
+See [`useme.md`](useme.md) for full deployment steps. The CI/CD pipeline (`.github/workflows/deploy.yml`) automates builds and deploys on push to `main`. Infrastructure can also be provisioned via Terraform in `terraform/`.
+
+---
+
+## 11. CI/CD Workflows
+
+| Workflow | Trigger | Purpose |
+|----------|---------|---------|
+| `ci.yml` | Push to `main`, PRs | Pytest with 80% coverage threshold |
+| `eval_pipeline.yml` | Config changes on `dev` | Evaluate retrieval configs → deploy best to Vertex AI |
+| `deploy.yml` | Push to `main`, manual | Build Docker images → push to Artifact Registry → deploy to Cloud Run |
+| `drift_detection.yml` | Scheduled | Monitor embedding drift via Evidently |
+| `corpus_refresh.yml` | Manual / triggered | Re-run scraping + chunking + embedding pipeline |
 
 ---
 

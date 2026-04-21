@@ -2,8 +2,12 @@
 Hybrid retriever: vector + BM25 with Weighted Reciprocal Rank Fusion.
 """
 
+import logging
+
 import psycopg2
 from sentence_transformers import SentenceTransformer
+
+logger = logging.getLogger(__name__)
 
 
 class HybridRetriever:
@@ -17,7 +21,21 @@ class HybridRetriever:
         self.config = retrieval_config
         self.embedding_column = model_info["embedding_column"]
         self.model = SentenceTransformer(model_info["model_name"])
+        self._db_params = db_params
         self.conn = psycopg2.connect(**db_params)
+
+    def _ensure_connection(self):
+        """Reconnect if the database connection was lost."""
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("SELECT 1")
+        except (psycopg2.InterfaceError, psycopg2.OperationalError):
+            logger.warning("DB connection lost, reconnecting...")
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+            self.conn = psycopg2.connect(**self._db_params)
 
     def _vector_search(self, query_embedding, top_k: int) -> list[tuple]:
         col = self.embedding_column
@@ -42,6 +60,7 @@ class HybridRetriever:
             LIMIT %s;
         """
         emb_list = query_embedding.tolist()
+        self._ensure_connection()
         with self.conn.cursor() as cur:
             cur.execute(query, (emb_list, emb_list, top_k))
             return cur.fetchall()
@@ -70,11 +89,12 @@ class HybridRetriever:
         ORDER BY rank DESC
         LIMIT %s;
         """
+        self._ensure_connection()
         with self.conn.cursor() as cur:
             cur.execute(query, (query_text, query_text, top_k))
             return cur.fetchall()
 
-    def _reciprocal_rank_fusion(self, vector_results, bm25_results, top_k: int) -> list[tuple]:
+    def _reciprocal_rank_fusion(self, vector_results, bm25_results, top_k: int):
         k = self.config["rrf_k"]
         w_vec = self.config["vector_weight"]
         w_bm25 = self.config["bm25_weight"]
@@ -92,9 +112,9 @@ class HybridRetriever:
             docs[doc_id] = row
 
         ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
-        return [docs[doc_id] for doc_id, _ in ranked]
+        return [(docs[doc_id], score) for doc_id, score in ranked]
 
-    def retrieve(self, query: str, top_k: int = None) -> list[dict]:
+    def retrieve(self, query: str, top_k: int = None) -> dict:
         top_k = top_k or self.config["top_k"]
         fetch_k = top_k * self.config["fetch_multiplier"]
 
@@ -103,16 +123,22 @@ class HybridRetriever:
         bm25_results = self._bm25_search(query, fetch_k)
         fused = self._reciprocal_rank_fusion(vector_results, bm25_results, top_k)
 
-        return [
+        chunks = [
             {
                 "id": row[0],
                 "text": row[1],
                 "source_url": row[2],
                 "company": row[3],
                 "role": row[4],
+                "score": round(score, 6),
             }
-            for row in fused
+            for row, score in fused
         ]
+
+        return {
+            "chunks": chunks,
+            "query_embedding": query_embedding,
+        }
 
     def close(self):
         self.conn.close()

@@ -1,6 +1,8 @@
 """
 Entry point for the generation pipeline.
 """
+import os
+
 from src.rag_pipeline.model_registry import get_deployed_embedding_model
 from src.rag_pipeline.retriever import HybridRetriever
 from src.rag_pipeline.generator import RAGGenerator
@@ -20,13 +22,20 @@ def load_generation_config(path: str = None) -> dict:
 
 def get_db_params(config: dict) -> dict:
     db = config["database"]
-    return {
-        "host": db["host"],
-        "port": db["port"],
-        "dbname": db["dbname"],
-        "user": db["user"],
-        "password": db["password"],
+    params = {
+        "dbname": os.environ.get("DB_NAME", db.get("dbname", "interviewprep-ai-database")),
+        "user": os.environ.get("DB_USER", db.get("user", "postgres")),
+        "password": os.environ.get("DB_PASSWORD", db.get("password", "")),
     }
+
+    if os.environ.get("DB_CONNECTION_MODE") == "socket":
+        instance = os.environ.get("CLOUD_SQL_INSTANCE_CONNECTION_NAME", "")
+        params["host"] = f"/cloudsql/{instance}"
+    else:
+        params["host"] = os.environ.get("DB_HOST", db.get("host", "127.0.0.1"))
+        params["port"] = int(os.environ.get("DB_PORT", db.get("port", 5432)))
+
+    return params
 
 
 def build_generator(config_path: str = None) -> RAGGenerator:

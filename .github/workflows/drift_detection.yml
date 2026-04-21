@@ -1,0 +1,55 @@
+# .github/workflows/drift_detection.yml
+# Runs every Monday at 9 AM UTC. Also supports manual trigger.
+
+name: Weekly Drift Detection
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"   # Every Monday 9 AM UTC
+  workflow_dispatch:        # Manual trigger from GitHub UI
+    inputs:
+      days:
+        description: "Look-back window in days"
+        default: "7"
+        required: false
+
+jobs:
+  drift-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install sentence-transformers numpy psycopg2-binary \
+            google-cloud-storage python-dotenv pyyaml mlflow \
+            evidently pandas scipy requests
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Run drift detection
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          MLFLOW_TRACKING_URI: "http://${{ secrets.MLFLOW_HOST }}:5000"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: ${{ github.repository }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          DAYS=${{ github.event.inputs.days || '7' }}
+          python -m src.monitoring.drift_detection --days $DAYS
+ 

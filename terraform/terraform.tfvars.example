@@ -1,0 +1,13 @@
+project_id        = "professorbot-dovbsg"
+region            = "us-central1"
+zone              = "us-central1-a"
+db_name           = "interviewprep-ai-database"
+db_instance_name  = "interviewprep-ai-db"
+db_password       = "CHANGE_ME"
+openai_api_key    = "sk-..."
+backend_image     = "us-central1-docker.pkg.dev/professorbot-dovbsg/interviewprep-ai/backend:latest"
+frontend_image    = "us-central1-docker.pkg.dev/professorbot-dovbsg/interviewprep-ai/frontend:latest"
+
+# Set to 1 to avoid cold starts (costs more), 0 to save money
+backend_min_instances  = 1
+frontend_min_instances = 0
